@@ -1009,23 +1009,31 @@ async function initializeApp() {
     }
 
     // Fetch HA calendar events
-    if (!isStandaloneDev && config.calendar_entity_id) {
-      try {
-        const startTime = encodeURIComponent(calendarRange.start.toISOString());
-        const endTime = encodeURIComponent(calendarRange.end.toISOString());
-        const apiPath = `/calendars/${config.calendar_entity_id}?start=${startTime}&end=${endTime}`;
-
-        console.log("[INFO] Fetching calendar data from: " + hassApiUrl + apiPath);
-        const data = await callHaApi(apiPath);
-        haEvents = (data || []).map(e => ({
-          ...e,
-          source: 'ha',
-          calendar_entity_id: config.calendar_entity_id
-        }));
-        console.log('[INFO] Successfully fetched HA calendar data.');
-      } catch (error) {
-        console.error('[ERROR] Error fetching HA calendar data:', error.message);
-      }
+    if (!isStandaloneDev) {
+        try {
+            const states = await callHaApi('/states');
+            const calendarEntities = states.filter(entity => entity.entity_id.startsWith('calendar.')).map(entity => entity.entity_id);
+            const startTime = encodeURIComponent(calendarRange.start.toISOString());
+            const endTime = encodeURIComponent(calendarRange.end.toISOString());
+            const results = await Promise.all(calendarEntities.map(async entityId => {
+                        try {
+                            const apiPath = `/calendars/${entityId}?start=${startTime}&end=${endTime}`;
+                            const data = await callHaApi(apiPath);
+                            return (data || []).map(e => ({
+                                    ...e,
+                                    source: 'ha',
+                                    calendar_entity_id: entityId
+                                }));
+                        } catch (error) {
+                            console.error(`[ERROR] Error fetching HA calendar data for ${entityId}:`, error.message);
+                            return [];
+                        }
+                    }));
+            haEvents = results.flat();
+            console.log(`[INFO] Fetched ${haEvents.length} events from ${calendarEntities.length} HA calendars.`);
+        } catch (error) {
+            console.error('[ERROR] Error fetching HA calendar list:', error.message);
+        }
     }
 
     // Fetch CalDAV events
