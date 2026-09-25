@@ -1026,11 +1026,7 @@ async function initializeApp() {
                         `[DEBUG] ${entityId} returned ${data?.length ?? 0} events.`
                     );
 
-                    return (data || []).map(e => ({
-                        ...e,
-                        source: 'ha',
-                        calendar_entity_id: entityId
-                    }));
+                    return (data || []).map(e => { const startValue = e.start?.dateTime || e.start?.date || e.start; const endValue = e.end?.dateTime || e.end?.date || e.end; const isAllDay = !!(e.start?.date && !e.start?.dateTime); return { ...e, title: e.summary || e.title || '(No title)', start: startValue, end: endValue, allDay: isAllDay, source: 'ha', calendar_entity_id: entityId }; }); 
                 } catch (error) {
                     console.error(
                         `[ERROR] Error fetching HA calendar data for ${entityId}:`,
