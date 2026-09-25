@@ -982,6 +982,7 @@ async function initializeApp() {
   }
 
   async function fetchCalendarData(range = getCalendarRange()) {
+    console.log("*********** MY MODIFIED fetchCalendarData IS RUNNING ***********");
     const calendarRange = getCalendarRange(range.start, range.end);
     let haEvents = [];
     let caldavEvents = [];
