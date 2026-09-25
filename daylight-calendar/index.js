@@ -988,26 +988,72 @@ async function initializeApp() {
     let caldavEvents = [];
 
     // In standalone mode, load mock data mixed with real CalDAV data
-    if (isStandaloneDev) {
-      try {
-        const mockPath = path.join(__dirname, 'mock-data', 'calendar.json');
-        const mockData = JSON.parse(fs.readFileSync(mockPath, 'utf8'));
-        console.log(`[MOCK] Loaded ${mockData.events.length} mock HA calendar events`);
-        haEvents = mockData.events;
-      } catch (e) {
-        console.warn('[MOCK] Could not load mock calendar data:', e.message);
-      }
+    if (!isStandaloneDev) {
+    console.log("[DEBUG] Starting HA calendar fetch...");
 
-      // Try to fetch REAL CalDAV events first
-      try {
-        caldavEvents = await caldavService.fetchAllEvents(calendarRange);
-        console.log(`[INFO] (Standalone) Fetched ${caldavEvents.length} Real CalDAV events`);
-      } catch (error) {
-        console.error('[ERROR] Error fetching Real CalDAV events in standalone mode:', error.message);
-        // Fallback to mock events ONLY if real fetch fails completely and we have no accounts?
-        // Actually, let's just log it. If the user wants real CalDAV, they need to connect.
-      }
+    try {
+        console.log("[DEBUG] Calling /states...");
+        const states = await callHaApi('/states');
+        console.log(`[DEBUG] /states returned ${states.length} states.`);
+
+        const calendarEntities = states
+            .filter(entity => entity.entity_id.startsWith('calendar.'))
+            .map(entity => entity.entity_id);
+
+        console.log(
+            `[DEBUG] Found ${calendarEntities.length} calendar entities:`,
+            calendarEntities
+        );
+
+        const startTime = encodeURIComponent(calendarRange.start.toISOString());
+        const endTime = encodeURIComponent(calendarRange.end.toISOString());
+
+        console.log(
+            `[DEBUG] Fetching calendars from ${startTime} to ${endTime}`
+        );
+
+        const results = await Promise.all(
+            calendarEntities.map(async entityId => {
+                try {
+                    const apiPath =
+                        `/calendars/${entityId}?start=${startTime}&end=${endTime}`;
+
+                    console.log(`[DEBUG] Calling ${apiPath}`);
+
+                    const data = await callHaApi(apiPath);
+
+                    console.log(
+                        `[DEBUG] ${entityId} returned ${data?.length ?? 0} events.`
+                    );
+
+                    return (data || []).map(e => ({
+                        ...e,
+                        source: 'ha',
+                        calendar_entity_id: entityId
+                    }));
+                } catch (error) {
+                    console.error(
+                        `[ERROR] Error fetching HA calendar data for ${entityId}:`,
+                        error.message
+                    );
+                    return [];
+                }
+            })
+        );
+
+        haEvents = results.flat();
+
+        console.log(
+            `[INFO] Fetched ${haEvents.length} events from ${calendarEntities.length} HA calendars.`
+        );
+
+    } catch (error) {
+        console.error(
+            '[ERROR] Error fetching HA calendar list:',
+            error.message
+        );
     }
+}
 
     // Fetch HA calendar events
     if (!isStandaloneDev) {
