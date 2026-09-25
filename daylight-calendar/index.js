@@ -1114,6 +1114,23 @@ async function initializeApp() {
     });
 
     const disabledCalendarIds = new Set(calendarSettings.disabledCalendarIds);
+    console.log(`[DEBUG] mergedEvents: ${mergedEvents.length}`);
+
+const destinationCounts = mergedEvents.reduce((counts, event) => {
+    counts[event.destinationType] =
+        (counts[event.destinationType] || 0) + 1;
+    return counts;
+}, {});
+
+console.log('[DEBUG] Destination counts:', destinationCounts);
+
+const filteredEvents = mergedEvents.filter(
+    event => !disabledCalendarIds.has(event.calendar_entity_id)
+);
+
+console.log(`[DEBUG] Events after disabled-calendar filter: ${filteredEvents.length}`);
+
+return filteredEvents;
     return mergedEvents.filter(event => !disabledCalendarIds.has(event.calendar_entity_id));
   }
 
