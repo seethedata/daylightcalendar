@@ -40,6 +40,9 @@
         <div class="tab-item" data-tab-target="lists-content">
           <i class="material-icons">checklist</i><span>Lists</span>
         </div>
+        <div class="tab-item" data-tab-target="pantry-content">
+          <i class="material-icons">kitchen</i><span>Pantry</span>
+        </div>
         <div class="tab-item" data-tab-target="games-content">
           <i class="material-icons">sports_esports</i><span>Games</span>
         </div>
@@ -75,6 +78,10 @@
 
       <turbo-frame id="lists-content" class="tab-content" src="pages/lists.html">
         <!-- Lists content will be loaded here -->
+      </turbo-frame>
+
+      <turbo-frame id="pantry-content" class="tab-content" src="pages/pantry.html">
+        <!-- Pantry content will be loaded here -->
       </turbo-frame>
 
       <turbo-frame id="games-content" class="tab-content" src="pages/games.html">
@@ -342,6 +349,22 @@
               </div>
             </form>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="app-dialog-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="app-dialog-title">
+    <div class="modal-content app-dialog-content">
+      <div class="modal-header">
+        <h3 id="app-dialog-title">Daylight</h3>
+        <button type="button" class="modal-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="app-dialog-message"></p>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="app-dialog-cancel">Cancel</button>
+          <button type="button" class="btn btn-primary" id="app-dialog-confirm">OK</button>
         </div>
       </div>
     </div>

@@ -1,5 +1,142 @@
 # Changelog
 
+## [1.1.9.31] - 2026-09-25
+
+Taps on the Settings page could land on invisible parts of closed dialogs. Settings forces its
+labels and descriptions to `visibility: visible`, and that also matched the ones inside the closed
+Add-profile and Edit-profile dialogs — twelve elements that stayed transparent but caught taps on
+whatever lay beneath them, including face recognition's Enroll button. A closed dialog now never
+receives pointer events; nothing looks different.
+
+Found by driving face enrolment through the real screens for the first time (it had previously
+been tested through the API). Verified afterwards: Enroll -> PIN keypad -> five guided poses saved
+in about six seconds; the enrolled face was recognised on the Games tab in three seconds, a stranger
+was never chosen in sixty, and the camera was released on leaving the tab. No invisible tappable
+elements remain on any page.
+
+
+## [1.1.9.30] - 2026-09-25
+
+Pantry now opens the receipt workflow on both phones and the wall panel. A camera-first scan control
+opens a touch cropper with four large corner handles, honours the photo's orientation, removes the
+table or background before upload, and downsizes the result to a model-friendly JPEG. Upload progress,
+ten-second queued/reading updates, retryable failures and the model's four-minute expectation remain
+visible without letting the Pantry page itself scroll.
+
+Ready receipts open into a phone-sized card review as well as a wide panel review. Printed evidence,
+remembered names, quantities, units, prices, categories and parser flags stay visible; included rows,
+restored dropped lines and reconciliation totals update together as corrections are made. Confirmation
+teaches item memory and plainly notes that it deletes the photo, while corrected CSV export and receipt
+deletion use the same saved review. Settings now includes the local receipt reader URL, model name and a
+connection check that distinguishes an unreachable reader from a missing model.
+
+## [1.1.9.29] - 2026-09-25
+
+Receipt photos can now be queued for the local Qwen vision model and turned into durable,
+reviewable grocery rows without making the wall panel wait for inference. One background worker
+feeds Ollama a receipt at a time, survives add-on restarts by re-queuing interrupted work, records
+timings and readable failures, and supports retry, row correction, confirmation, deletion and CSV
+export. Reader address and model settings live in the persistent add-on data volume and include a
+connection/model check.
+
+The parser accepts both the current item-code format and the earlier four-field output, distrusts
+unsupported quantities, recovers weights from printed evidence, removes payment, tax, total and
+adjacent weight-artifact rows, and reconciles included prices and counts against the receipt. A
+confirmed correction is remembered by store and item code (or printed text), so later receipts
+start with the household's preferred name and category.
+
+Receipt JPEGs are capped at 12 MB, stay in the persistent private data directory only while review
+is pending, and are deleted on confirmation or receipt deletion. Payment/card text is never kept as
+an item and is redacted in the dropped-row audit. Verified through the real HTTP API with an
+isolated Ollama stub: queued/processing/review state, strict one-at-a-time inference, confirmation
+and item memory, garbage and timeout failures, retry, photo deletion and spreadsheet-safe CSV.
+
+## [1.1.9.28] - 2026-09-25
+
+Security update to the add-on's JavaScript dependencies. `npm audit` reported 31 known
+vulnerabilities (3 critical, 14 high); after this release it reports none in production
+dependencies and 3 moderate ones in development-only build tooling. Twenty production packages
+moved by patch or minor versions — notably express 4.21.2 -> 4.22.3, axios 1.9.0 -> 1.20.0 and
+ws 8.17.1 -> 8.21.3.
+
+`ws` is now declared as a runtime dependency. The server requires it, but it was listed as a
+development dependency, so it only worked because the image installs development packages too;
+a production-only install would have crashed the add-on.
+
+Verified on Node 16.20.2 — the exact runtime of the current base image — in a throwaway
+container: every API endpoint answered 200 with no runtime errors.
+
+
+## [1.1.9.27] - 2026-09-25
+
+Hextris is gone from the game library. Its site, hextris.io, no longer exists (the domain stopped
+resolving), so its tile opened to an empty frame on the wall panel. It is removed from the defaults
+and retired automatically from libraries that were seeded before it died; the clean-up runs at
+start-up, before any request can race it.
+
+The Debug tab no longer appears on the family panel. The code revealed it when development mode
+was on but nothing ever hid it otherwise, so it showed in production too. It now defaults to hidden
+and appears only with `development_mode` enabled — verified both ways.
+
+Also verified end to end in a browser for the first time: tapping a game (the launch target covers
+98% of the tile) starts a session, the countdown runs and shows its one-minute warning, and at zero
+the game is unloaded, "Time's up" appears, and the server refuses a restart.
+
+
+## [1.1.9.26] - 2026-09-25
+
+Choosing a player on the wall display still required a tap even though the Dell panel already has
+a camera. Face recognition can now be enabled from Settings and enrolled per household profile;
+on Games, three clear matches in a row offer to choose that person after a three-second “Not me”
+window. Recognition never starts a game, and chores, remaining time, and the one-player limit all
+continue through the same screen-time gate. Similar-looking faces must also beat the next-best
+match by a safe margin, so uncertainty leaves manual selection in control.
+
+The face library and models are bundled with the add-on for offline use and load only when the
+feature actually needs them. Daylight saves no photos or video: only numeric face vectors remain
+in the add-on data volume, nothing is sent away from the device, and enabling, enrolling, or
+deleting those vectors requires the existing parent PIN and its lockout protection. Camera tracks
+stop when Games is left, the page is hidden, a game or modal takes over, or enrollment closes;
+permission and model failures fall back to tapping a name without blocking the kiosk.
+
+The “Finish these first” checklist on Games is now functional as well. Its chore rows are large
+touch controls that complete the underlying Home Assistant todo item, run the existing star-award
+path, and refresh the gate immediately instead of looking tappable while doing nothing.
+
+Two defects were found by exercising the camera pipeline in a real browser with a fake camera feed
+before release. TensorFlow.js was never told which backend to use, so on any machine without WebGL
+it chose its WebAssembly backend — which downloads its binaries from a CDN, unreachable offline and
+through ingress — and every detection failed. It is now pinned to WebGL with a pure-JavaScript CPU
+fallback that needs no downloads. And recognition discarded any face the detector scored below 0.8,
+but this detector scores a plainly visible face around 0.6-0.85, so an enrolled face measured at
+0.685 was never compared at all. The detector floor is now 0.5 (0.6 when enrolling); protection
+against choosing the wrong child comes from the match distance, the runner-up margin, three
+consecutive frames and the "Not me" button. Verified: an enrolled face matched at distance 0.33 and
+was chosen after 3 seconds; a stranger measured 0.70-0.73 and was never chosen in 60 seconds; the
+camera was released on leaving the tab in both runs.
+
+## [1.1.9.25] - 2026-09-25
+
+The Games page looked as though it enforced playtime, but its 30-minute balance and every
+per-game limit were static labels: the 15:00 overlay never moved, selecting a profile changed
+nothing, and a launched game could run without any limit at all. Adding a game also stopped at a
+console message, so the library reset to three hardcoded tiles whose artwork depended on dead or
+third-party image hosts.
+
+Games now use a durable, append-only session ledger with per-profile daily allowances, parent
+grants, server-enforced expiry, and heartbeat recovery that charges only through the last known
+play when the panel loses power or the page crashes. Assigned chores that are due now—and,
+optionally, today’s routines—must be complete before play begins; the block names the exact work
+remaining and a PIN-protected parent can allow one session. The same 4–8 digit parent PIN protects
+added time, settings changes, and game removal, with a temporary lock after repeated wrong tries.
+
+The wall display now asks who is playing, shows each person’s remaining time, counts down against
+the server while a game is open, stops the iframe and its audio at zero, and keeps the page fixed
+to the viewport while only a large library scrolls inside its own bounded area. The game library
+persists under the add-on data volume and uses local Material icons instead of hotlinked images;
+Screen time settings now include household defaults, individual limits, chore and routine gates,
+and a touchscreen numeric PIN pad.
+
 ## [1.1.9.24] - 2026-09-22
 
 The week view stopped showing when things actually happen. Fitting the calendar to the panel in

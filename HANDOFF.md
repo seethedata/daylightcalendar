@@ -154,6 +154,39 @@ login. Delete or stub that file before local dev if you don't want that.
 
 ---
 
+### Host changes made 2026-09-25
+
+- **Edge camera policy**: `HKLM\SOFTWARE\Policies\Microsoft\Edge\VideoCaptureAllowedUrls\1 =
+  http://localhost:8099`, so the kiosk can use the webcam for face recognition without a permission
+  prompt. It allows that one origin only.
+- **Kiosk launcher hardened** (`C:\HAOS\start-daylight-display.ps1`, original kept as
+  `.bak-20260925`). Relaunching Edge while a previous kiosk instance was still shutting down made the
+  new one hand off to the dying process and exit, leaving the panel blank. The launcher now waits
+  for old kiosk processes to exit, confirms Edge stayed up, and retries up to 3 times. Verified by
+  force-killing and relaunching with no pause.
+- **Local model: Ollama 0.34.4 + `qwen2.5vl:3b`** (3.2 GB) on the Windows side, set up in HA.
+  - Chosen by benchmark on a real crumpled ALDI receipt (38 lines): Qwen2.5-VL 3B read 38/38 with
+    compact one-line-per-item output in 229 s. Qwen3-VL 2B looped ("Paper Bags" x79, never
+    finished); Tesseract -> Qwen3 1.7B/0.6B got 12/38 and 10/38, because Tesseract pairs prices with
+    the wrong names where the paper curls. Ollama itself costs 27 MB idle; raw llama.cpp would only
+    save disk (Ollama bundles ~2.7 GB of GPU libraries this laptop cannot use).
+  - Runs from scheduled task `Ollama-Serve` (at logon +30 s, below-normal priority, restarts on
+    failure) with user env `OLLAMA_HOST=0.0.0.0:11434`.
+  - **Private link to the HA VM**: Hyper-V internal switch `HA-Link`, laptop `10.77.77.1/24`, HA VM
+    `eth1` static `10.77.77.2/24` with **no gateway** (eth0 stays primary; HA's LAN/internet traffic
+    is unchanged). This exists because the Default Switch re-subnets on every reboot, and because
+    Windows' strong-host model drops VM traffic aimed at the laptop's Wi-Fi IP. `10.77.77.x` never
+    changes.
+  - **Firewall**: `Ollama - HA VM only (allow)` admits only `10.77.77.2`; `Ollama - everything else
+    (block)` and `Ollama - IPv6 (block)` cover all other IPv4/IPv6. Block beats allow in Windows
+    Firewall, so a stray "Allow access?" prompt can never expose the model to the LAN. Verified: LAN
+    requests to 192.168.1.118:11434 get no response. (Windows rejects `::/0`; use the full range.)
+  - **In HA**: Ollama integration at `http://10.77.77.1:11434`, AI Task entity
+    `ai_task.receipt_reader_local` (num_ctx 8192, keep_alive 120 s so RAM is freed after use).
+    Verified end to end: HA -> model -> answer in 12 s.
+  - Not yet reboot-tested. Every piece is persistent by design (switch, static IPs, firewall rules,
+    env var, logon-triggered task), but it has not been proven through a restart.
+
 ## 4. Remaining work
 
 Packages 1-4 were completed on 2026-09-12 (versions 1.1.9.13 through 1.1.9.17), each verified
@@ -187,6 +220,30 @@ of it is deployed.** See §7.
   measured **1.06:1 at 13.6px** (effectively invisible across a room) to **9.35:1 at 16px**.
   The Chores board went from 22% to 83-94% of its own page. Verified by the harness in §3:
   16/16 layout checks and 10/10 contrast checks at four viewports.
+
+- **Pantry step 1 — receipts (1.1.9.29-.30).** Pantry tab: scan (phone camera via the HA app) ->
+  touch crop -> upload -> one background worker sends it to the local model -> review -> confirm.
+  Backend in `scripts/receipt-service.js` + `scripts/receipt-parser.js`; tests in
+  `scripts/test-receipts.js <model-output.txt> <truth.json>` (fixtures live OUTSIDE the repo — real
+  receipts carry card digits). Parser rules that real output forced: totals may arrive on one
+  comma-separated line; weight lines arrive after the item row (prefer the `(N)` net line);
+  quantities are 1 unless the receipt itself shows weight or multi-buy (the model's counts and units
+  are unreliable — it writes ALDI tax codes as units); reconciliation vs the printed subtotal and
+  ITEMS count is the safety net, and names a merged repeat with a one-tap fix. Photos are deleted on
+  confirm/delete. Verified end to end on the live panel with a real ALDI receipt (244 s).
+- **Not built yet:** pantry stock (step 2) and meals <-> pantry (step 3). Review rows are tall cards
+  on phones; a compact layout for long receipts is a worthwhile follow-up.
+
+### Pending decision: image hardening (blocked by the permission classifier, not attempted again)
+
+The add-on image is still `ghcr.io/home-assistant/*-base:3.15` (Alpine 3.15, EOL Nov 2023, Node
+16), runs `npm install` (dev deps ship) and a dead `npm run build`, installs Chromium + Xorg +
+Openbox, and `config.yaml` grants `privileged: SYS_ADMIN` plus framebuffer/GPU/TTY/input devices —
+all only for an on-device `kiosk_mode` whose option no longer exists. Proposed: base 3.23, `nodejs
+npm` only, `npm ci --omit=dev`, drop the build step and the kiosk stack/privileges, add a
+`.dockerignore` (local builds would otherwise copy `data/` — real Apple credentials — and
+`.env.local` — an HA token). Needs the user's go-ahead; verify with a local `docker build` first.
+`ws` has already been moved to runtime dependencies, so `--omit=dev` is safe once applied.
 
 ### Still open, from the teardown's ranked recommendations
 

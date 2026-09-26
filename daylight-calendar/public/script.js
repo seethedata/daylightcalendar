@@ -30,12 +30,55 @@ let selectedListId = null;
 let listsPollTimer = null;
 let listEditInProgress = false;
 let listPeople = [];
+let receiptRecords = [];
+let receiptPollTimer = null;
+let receiptVisibilityListenerAdded = false;
+let activeReceiptReview = null;
+let receiptCropBitmap = null;
+let receiptCropBounds = { x: 0, y: 0, width: 1, height: 1 };
+let receiptCropGesture = null;
+let receiptCropResizeObserver = null;
+let receiptUploadRequest = null;
+const RECEIPT_CATEGORIES = ['produce', 'dairy', 'meat', 'bakery', 'pantry', 'frozen', 'snacks', 'drinks', 'household', 'other'];
 let choreProfiles = [];
 let choreRewards = [];
 let pendingStarAwards = [];
 let pendingRewardRedemption = null;
 let showCompletedChores = true;
 let cleanupChoreManageMenu = null;
+let screenTimeSnapshot = null;
+let gameLibrary = [];
+let selectedGameProfileId = null;
+let pendingGameOverridePin = null;
+let activeGameSession = null;
+let activeGame = null;
+let gameTimerInterval = null;
+let gameHeartbeatInterval = null;
+let gameServerRemainingSeconds = null;
+let gameServerSyncTime = 0;
+let shownGameWarnings = new Set();
+let gamePinAction = null;
+let gamePinValue = '';
+let selectedGrantMinutes = 15;
+let screenTimeSettingsSnapshot = null;
+let settingsPinFlow = null;
+let settingsPinValue = '';
+let faceProfilesSnapshot = null;
+let faceDescriptorSnapshot = null;
+let faceApiScriptPromise = null;
+let faceModelsPromise = null;
+let faceRecognitionStream = null;
+let faceRecognitionTimer = null;
+let faceRecognitionRunId = 0;
+let faceRecognitionMatcher = null;
+let faceRecognitionStreak = { profileId: null, count: 0 };
+let faceEnrollmentStream = null;
+let faceEnrollmentTimer = null;
+let faceEnrollmentRunId = 0;
+let faceEnrollmentState = null;
+let pendingFaceSelection = null;
+const suppressedFaceProfiles = new Map();
+let appDialogResolver = null;
 let addonLivenessTimer = null;
 let loadedAddonVersion = null;
 let addonLivenessFailures = 0;
@@ -78,7 +121,7 @@ document.addEventListener('DOMContentLoaded', function () {
       setupTurboFrameListeners();
 
       if (config.development_mode) {
-        document.getElementById('debug-tab').style.display = 'block';
+        document.getElementById('debug-tab').style.display = 'flex';
         console.log('[INFO] Debug mode enabled - showing debug tab');
       }
     })
@@ -204,6 +247,9 @@ function initializeLoadedFrame(frame) {
       break;
     case 'lists-content':
       initializeListsPage();
+      break;
+    case 'pantry-content':
+      initializePantryPage();
       break;
     case 'games-content':
       initializeGamesPage();
@@ -562,64 +608,35 @@ function initializeMealsPage() {
 
 function initializeGamesPage() {
   console.log('[INFO] Initializing games page...');
+  const frame = document.getElementById('games-content');
+  if (!frame || frame.dataset.gamesInitialized === 'true') return;
+  frame.dataset.gamesInitialized = 'true';
 
-  setTimeout(() => {
-    // Setup game page buttons
-    const addGameBtn = document.getElementById('add-game-button');
-    const addGameModal = document.getElementById('add-game-modal');
-    const addGameForm = document.getElementById('add-game-form');
-    const gameFocusModal = document.getElementById('game-focus-modal');
-    const gameIframe = document.getElementById('game-iframe');
-
-    if (addGameBtn && addGameModal) {
-      addGameBtn.addEventListener('click', () => {
-        console.log('[INFO] Add game button clicked');
-        addGameModal.classList.add('show');
-      });
-    }
-
-    if (addGameForm) {
-      addGameForm.addEventListener('submit', (e) => {
-        e.preventDefault();
-        console.log('[INFO] Add game form submitted');
-        const formData = new FormData(addGameForm);
-        console.log('[INFO] Game data:', Object.fromEntries(formData));
-        addGameModal.classList.remove('show');
-        addGameForm.reset();
-      });
-    }
-
-    // Setup game item clicks
-    const gameItems = document.querySelectorAll('.game-item');
-    gameItems.forEach(item => {
-      item.addEventListener('click', () => {
-        const gameUrl = item.dataset.gameUrl;
-        const gameTitle = item.querySelector('.game-title').textContent;
-
-        console.log('[INFO] Game clicked:', gameTitle, gameUrl);
-
-        if (gameFocusModal && gameIframe) {
-          document.getElementById('game-modal-title').textContent = gameTitle;
-          gameIframe.src = gameUrl;
-          gameFocusModal.classList.add('show');
-        }
-      });
-    });
-
-    // Setup profile selection
-    const profileList = document.getElementById('profile-list');
-    if (profileList) {
-      profileList.onclick = (e) => {
-        const profileItem = e.target.closest('.profile-item');
-        if (profileItem) {
-          document.querySelectorAll('.profile-item').forEach(p => p.classList.remove('selected'));
-          profileItem.classList.add('selected');
-          console.log('[INFO] Profile selected:', profileItem.dataset.profile);
-        }
-      };
-      loadGameProfiles(profileList);
-    }
-  }, 100);
+  document.getElementById('profile-list')?.addEventListener('click', event => {
+    const profile = event.target.closest('[data-game-profile]');
+    if (profile) selectGameProfile(profile.dataset.gameProfile, 'manual');
+  });
+  document.getElementById('games-grid')?.addEventListener('click', event => {
+    const remove = event.target.closest('[data-remove-game]');
+    if (remove) return openGamePinModal('remove', { gameId: remove.dataset.removeGame });
+    const launch = event.target.closest('[data-launch-game]');
+    if (launch && !launch.disabled) startGameSession(launch.dataset.launchGame);
+  });
+  document.getElementById('add-game-button')?.addEventListener('click', () => {
+    document.getElementById('add-game-error').textContent = '';
+    document.getElementById('add-game-modal')?.classList.add('show');
+    stopFaceRecognitionCamera({ clearBanner: true });
+  });
+  document.getElementById('add-game-form')?.addEventListener('submit', handleAddGame);
+  document.getElementById('open-chores-from-games')?.addEventListener('click', () => {
+    document.querySelector('.tab-item[data-tab-target="chores-content"]')?.click();
+  });
+  document.getElementById('parent-game-override')?.addEventListener('click', () => openGamePinModal('override'));
+  document.getElementById('add-game-time')?.addEventListener('click', () => openGamePinModal('grant'));
+  document.getElementById('game-blocking-list')?.addEventListener('click', completeBlockingChoreFromGames);
+  document.getElementById('face-match-reject')?.addEventListener('click', rejectPendingFaceSelection);
+  setupGamePinPad();
+  loadGamesPageData().then(loadFaceRecognitionForGames);
 }
 
 function listRequest(url, options = {}) {
@@ -757,7 +774,7 @@ function bindListsWorkspace(list) {
     } catch (error) { setListsSyncStatus(`Add failed: ${error.message}. Your text is still here.`, true); }
   });
   document.getElementById('delete-list-button')?.addEventListener('click', async () => {
-    if (!window.confirm(`Delete ${list.name}?`)) return;
+    if (!(await requestAppConfirmation('Delete list?', `Delete ${list.name}?`, 'Delete'))) return;
     try {
       await listRequest(`api/lists/${encodeURIComponent(list.id)}`, { method: 'DELETE' });
       selectedListId = null;
@@ -828,6 +845,942 @@ function initializeListsPage() {
   }
 }
 
+function isPantryPageVisible() {
+  const frame = document.getElementById('pantry-content');
+  return Boolean(frame?.classList.contains('active-content'));
+}
+
+async function receiptRequest(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
+  });
+  const data = response.status === 204 ? null : await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data?.error || 'The receipt request could not be completed.');
+  return data;
+}
+
+function initializePantryPage() {
+  const frame = document.getElementById('pantry-content');
+  if (!frame || frame.dataset.pantryInitialized === 'true') return;
+  frame.dataset.pantryInitialized = 'true';
+
+  const photoInput = document.getElementById('receipt-photo-input');
+  const cropSelection = document.getElementById('receipt-crop-selection');
+  const reviewContent = document.getElementById('receipt-review-content');
+
+  photoInput?.addEventListener('change', async event => {
+    const file = event.target.files?.[0];
+    if (file) await openReceiptCrop(file);
+    event.target.value = '';
+  });
+  document.getElementById('refresh-receipts')?.addEventListener('click', () => loadReceipts());
+  document.getElementById('upload-cropped-receipt')?.addEventListener('click', uploadCroppedReceipt);
+  document.getElementById('receipt-list')?.addEventListener('click', handleReceiptListClick);
+  reviewContent?.addEventListener('input', handleReceiptReviewInput);
+  reviewContent?.addEventListener('change', handleReceiptReviewInput);
+  reviewContent?.addEventListener('click', handleReceiptReviewClick);
+  reviewContent?.addEventListener('submit', handleReceiptReviewSubmit);
+
+  cropSelection?.addEventListener('pointerdown', beginReceiptCropGesture);
+  cropSelection?.addEventListener('pointermove', moveReceiptCropGesture);
+  cropSelection?.addEventListener('pointerup', endReceiptCropGesture);
+  cropSelection?.addEventListener('pointercancel', endReceiptCropGesture);
+  document.getElementById('receipt-crop-modal')?.querySelectorAll('.modal-close, .modal-cancel').forEach(button => {
+    button.addEventListener('click', clearReceiptCrop);
+  });
+
+  if (window.ResizeObserver) {
+    receiptCropResizeObserver?.disconnect();
+    receiptCropResizeObserver = new ResizeObserver(() => {
+      if (receiptCropBitmap && document.getElementById('receipt-crop-modal')?.classList.contains('show')) {
+        renderReceiptCropPreview();
+      }
+    });
+    const stage = document.getElementById('receipt-crop-stage');
+    if (stage) receiptCropResizeObserver.observe(stage);
+  }
+
+  if (!receiptVisibilityListenerAdded) {
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && isPantryPageVisible() && receiptRecords.some(receipt => ['queued', 'processing'].includes(receipt.status))) {
+        loadReceipts();
+      }
+    });
+    receiptVisibilityListenerAdded = true;
+  }
+
+  loadReceipts();
+}
+
+function receiptStatusDefinition(status) {
+  return {
+    queued: { label: 'Queued', className: 'is-queued' },
+    processing: { label: 'Reading… (about 4 min)', className: 'is-processing' },
+    review: { label: 'Needs review', className: 'is-review' },
+    confirmed: { label: 'Confirmed', className: 'is-confirmed' },
+    failed: { label: 'Failed — Retry', className: 'is-failed' }
+  }[status] || { label: 'Unknown', className: 'is-failed' };
+}
+
+function formatReceiptMoney(value) {
+  if (value === null || value === undefined || value === '') return '—';
+  const amount = Number(value);
+  return Number.isFinite(amount) ? `$${amount.toFixed(2)}` : '—';
+}
+
+function hasReceiptNumber(value) {
+  return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+}
+
+function formatReceiptDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return value || 'Date not set';
+  const date = new Date(`${value}T12:00:00`);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function setReceiptPageStatus(message, isError = false) {
+  const status = document.getElementById('receipt-page-status');
+  if (!status) return;
+  status.textContent = message;
+  status.classList.toggle('is-error', isError);
+}
+
+async function loadReceipts() {
+  const list = document.getElementById('receipt-list');
+  if (!list) return;
+  list.setAttribute('aria-busy', 'true');
+  try {
+    const receipts = await receiptRequest('api/receipts');
+    receiptRecords = Array.isArray(receipts) ? receipts : [];
+    renderReceiptList();
+    const reading = receiptRecords.filter(receipt => ['queued', 'processing'].includes(receipt.status)).length;
+    setReceiptPageStatus(reading ? `${reading} receipt${reading === 1 ? '' : 's'} waiting or being read.` : 'Receipts stay private on this device.');
+  } catch (error) {
+    list.innerHTML = `<div class="receipt-empty receipt-error"><i class="material-icons" aria-hidden="true">error_outline</i><span>${escapeHtml(error.message)}</span><button type="button" class="btn btn-secondary" data-reload-receipts>Try again</button></div>`;
+    setReceiptPageStatus(error.message, true);
+  } finally {
+    list.setAttribute('aria-busy', 'false');
+    updateReceiptPolling();
+  }
+}
+
+function renderReceiptList() {
+  const list = document.getElementById('receipt-list');
+  if (!list) return;
+  if (!receiptRecords.length) {
+    list.innerHTML = '<div class="receipt-empty"><i class="material-icons" aria-hidden="true">receipt_long</i><strong>No receipts yet</strong><span>Scan one from a phone or choose a photo on the wall panel.</span></div>';
+    return;
+  }
+
+  list.innerHTML = receiptRecords.map(receipt => {
+    const status = receiptStatusDefinition(receipt.status);
+    const id = escapeReceiptAttribute(receipt.id);
+    const store = receipt.store || 'Store not set';
+    const action = receipt.status === 'review'
+      ? `<button type="button" class="btn btn-primary" data-review-receipt="${id}">Review</button>`
+      : receipt.status === 'confirmed'
+        ? `<button type="button" class="btn btn-secondary" data-export-receipt="${id}"><i class="material-icons" aria-hidden="true">download</i> CSV</button>`
+        : '';
+    const statusMarkup = receipt.status === 'failed'
+      ? `<button type="button" class="receipt-status-chip ${status.className}" data-retry-receipt="${id}">${escapeHtml(status.label)}</button>`
+      : `<span class="receipt-status-chip ${status.className}">${escapeHtml(status.label)}</span>`;
+    const error = receipt.status === 'failed' && receipt.error
+      ? `<p class="receipt-row-error">${escapeHtml(receipt.error)}</p>` : '';
+    return `
+      <article class="receipt-list-row">
+        <div class="receipt-list-main">
+          <strong>${escapeHtml(store)}</strong>
+          <span>${escapeHtml(formatReceiptDate(receipt.date))}</span>
+          ${error}
+        </div>
+        <div class="receipt-list-total"><span>Total</span><strong>${escapeHtml(formatReceiptMoney(receipt.total ?? receipt.subtotal))}</strong></div>
+        <div class="receipt-list-status">${statusMarkup}</div>
+        <div class="receipt-list-actions">${action}</div>
+      </article>`;
+  }).join('');
+}
+
+function updateReceiptPolling() {
+  const needsPolling = receiptRecords.some(receipt => ['queued', 'processing'].includes(receipt.status));
+  if (needsPolling && !receiptPollTimer) {
+    receiptPollTimer = window.setInterval(() => {
+      if (!document.hidden && isPantryPageVisible()) loadReceipts();
+    }, 10000);
+  } else if (!needsPolling && receiptPollTimer) {
+    clearInterval(receiptPollTimer);
+    receiptPollTimer = null;
+  }
+}
+
+async function handleReceiptListClick(event) {
+  if (event.target.closest('[data-reload-receipts]')) {
+    await loadReceipts();
+    return;
+  }
+  const review = event.target.closest('[data-review-receipt]');
+  if (review) {
+    await openReceiptReview(review.dataset.reviewReceipt);
+    return;
+  }
+  const retry = event.target.closest('[data-retry-receipt]');
+  if (retry) {
+    retry.disabled = true;
+    try {
+      await receiptRequest(`api/receipts/${encodeURIComponent(retry.dataset.retryReceipt)}/retry`, { method: 'POST' });
+      setReceiptPageStatus('Receipt queued again. Reading takes about 4 minutes.');
+      await loadReceipts();
+    } catch (error) {
+      setReceiptPageStatus(error.message, true);
+      retry.disabled = false;
+    }
+    return;
+  }
+  const exportButton = event.target.closest('[data-export-receipt]');
+  if (exportButton) await exportReceiptCsv(exportButton.dataset.exportReceipt, exportButton);
+}
+
+async function decodeReceiptPhoto(file) {
+  if ('createImageBitmap' in window) {
+    try {
+      return await createImageBitmap(file, { imageOrientation: 'from-image' });
+    } catch (error) {
+      console.warn('[WARN] EXIF-aware image decoding failed; using the browser image decoder.', error);
+    }
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    image.decoding = 'async';
+    image.src = url;
+    await image.decode();
+    return image;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function openReceiptCrop(file) {
+  const errorBox = document.getElementById('receipt-crop-error');
+  if (errorBox) errorBox.textContent = '';
+  if (!file.type.startsWith('image/')) {
+    setReceiptPageStatus('Choose a photo of a receipt.', true);
+    return;
+  }
+  clearReceiptCrop();
+  try {
+    receiptCropBitmap = await decodeReceiptPhoto(file);
+    receiptCropBounds = { x: 0, y: 0, width: 1, height: 1 };
+    const modal = document.getElementById('receipt-crop-modal');
+    modal?.classList.add('show');
+    window.requestAnimationFrame(renderReceiptCropPreview);
+  } catch (error) {
+    setReceiptPageStatus(`This photo could not be opened: ${error.message}`, true);
+  }
+}
+
+function receiptBitmapWidth() {
+  return receiptCropBitmap?.width || receiptCropBitmap?.naturalWidth || 0;
+}
+
+function receiptBitmapHeight() {
+  return receiptCropBitmap?.height || receiptCropBitmap?.naturalHeight || 0;
+}
+
+function renderReceiptCropPreview() {
+  const canvas = document.getElementById('receipt-crop-canvas');
+  const surface = document.getElementById('receipt-crop-surface');
+  const stage = document.getElementById('receipt-crop-stage');
+  if (!canvas || !surface || !stage || !receiptCropBitmap) return;
+  const sourceWidth = receiptBitmapWidth();
+  const sourceHeight = receiptBitmapHeight();
+  const maxWidth = Math.max(1, stage.clientWidth - 56);
+  const maxHeight = Math.max(180, Math.min(window.innerHeight * 0.48, 560));
+  const scale = Math.min(maxWidth / sourceWidth, maxHeight / sourceHeight, 1);
+  const width = Math.max(1, Math.round(sourceWidth * scale));
+  const height = Math.max(1, Math.round(sourceHeight * scale));
+  surface.style.width = `${width}px`;
+  surface.style.height = `${height}px`;
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  context.clearRect(0, 0, width, height);
+  context.drawImage(receiptCropBitmap, 0, 0, width, height);
+  updateReceiptCropSelection();
+}
+
+function updateReceiptCropSelection() {
+  const selection = document.getElementById('receipt-crop-selection');
+  if (!selection) return;
+  selection.style.left = `${receiptCropBounds.x * 100}%`;
+  selection.style.top = `${receiptCropBounds.y * 100}%`;
+  selection.style.width = `${receiptCropBounds.width * 100}%`;
+  selection.style.height = `${receiptCropBounds.height * 100}%`;
+}
+
+function beginReceiptCropGesture(event) {
+  if (event.button !== 0) return;
+  const surface = document.getElementById('receipt-crop-surface');
+  const selection = document.getElementById('receipt-crop-selection');
+  if (!surface || !selection) return;
+  const rect = surface.getBoundingClientRect();
+  receiptCropGesture = {
+    pointerId: event.pointerId,
+    handle: event.target.closest('[data-crop-handle]')?.dataset.cropHandle || 'move',
+    startX: event.clientX,
+    startY: event.clientY,
+    surfaceWidth: rect.width,
+    surfaceHeight: rect.height,
+    bounds: { ...receiptCropBounds }
+  };
+  selection.setPointerCapture(event.pointerId);
+  event.preventDefault();
+}
+
+function moveReceiptCropGesture(event) {
+  if (!receiptCropGesture || event.pointerId !== receiptCropGesture.pointerId) return;
+  const { handle, bounds, surfaceWidth, surfaceHeight } = receiptCropGesture;
+  const dx = (event.clientX - receiptCropGesture.startX) / surfaceWidth;
+  const dy = (event.clientY - receiptCropGesture.startY) / surfaceHeight;
+  const minWidth = Math.min(0.35, Math.max(0.08, 44 / surfaceWidth));
+  const minHeight = Math.min(0.35, Math.max(0.08, 44 / surfaceHeight));
+  let { x, y, width, height } = bounds;
+
+  if (handle === 'move') {
+    x = Math.min(1 - width, Math.max(0, bounds.x + dx));
+    y = Math.min(1 - height, Math.max(0, bounds.y + dy));
+  } else {
+    if (handle.includes('w')) {
+      const nextX = Math.min(bounds.x + bounds.width - minWidth, Math.max(0, bounds.x + dx));
+      width = bounds.width + bounds.x - nextX;
+      x = nextX;
+    }
+    if (handle.includes('e')) width = Math.min(1 - bounds.x, Math.max(minWidth, bounds.width + dx));
+    if (handle.includes('n')) {
+      const nextY = Math.min(bounds.y + bounds.height - minHeight, Math.max(0, bounds.y + dy));
+      height = bounds.height + bounds.y - nextY;
+      y = nextY;
+    }
+    if (handle.includes('s')) height = Math.min(1 - bounds.y, Math.max(minHeight, bounds.height + dy));
+  }
+  receiptCropBounds = { x, y, width, height };
+  updateReceiptCropSelection();
+  event.preventDefault();
+}
+
+function endReceiptCropGesture(event) {
+  if (!receiptCropGesture || event.pointerId !== receiptCropGesture.pointerId) return;
+  const selection = document.getElementById('receipt-crop-selection');
+  if (selection?.hasPointerCapture(event.pointerId)) selection.releasePointerCapture(event.pointerId);
+  receiptCropGesture = null;
+}
+
+function clearReceiptCrop() {
+  if (receiptCropBitmap?.close) receiptCropBitmap.close();
+  receiptCropBitmap = null;
+  receiptCropGesture = null;
+  receiptCropBounds = { x: 0, y: 0, width: 1, height: 1 };
+  const canvas = document.getElementById('receipt-crop-canvas');
+  if (canvas) {
+    canvas.width = 1;
+    canvas.height = 1;
+  }
+}
+
+function canvasToJpeg(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('The cropped photo could not be encoded.')), 'image/jpeg', 0.85);
+  });
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('The cropped photo could not be read.'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function setReceiptUploadProgress(message, percent = 0, isError = false) {
+  const progress = document.getElementById('receipt-upload-progress');
+  const messageElement = document.getElementById('receipt-upload-message');
+  const bar = document.getElementById('receipt-progress-bar');
+  if (!progress || !messageElement || !bar) return;
+  progress.hidden = false;
+  progress.classList.toggle('is-error', isError);
+  messageElement.textContent = message;
+  bar.style.transform = `scaleX(${Math.max(0, Math.min(100, percent)) / 100})`;
+}
+
+function uploadReceiptImage(image) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    receiptUploadRequest = request;
+    request.open('POST', 'api/receipts');
+    request.setRequestHeader('Content-Type', 'application/json');
+    request.upload.addEventListener('progress', event => {
+      const percent = event.lengthComputable ? Math.round((event.loaded / event.total) * 100) : 0;
+      setReceiptUploadProgress(event.lengthComputable ? `Uploading receipt… ${percent}%` : 'Uploading receipt…', percent);
+    });
+    request.addEventListener('load', () => {
+      receiptUploadRequest = null;
+      let data = {};
+      try { data = JSON.parse(request.responseText || '{}'); } catch (error) { /* handled below */ }
+      if (request.status >= 200 && request.status < 300) resolve(data);
+      else reject(new Error(data.error || 'The receipt could not be uploaded.'));
+    });
+    request.addEventListener('error', () => {
+      receiptUploadRequest = null;
+      reject(new Error('The receipt upload lost its connection. Try again.'));
+    });
+    request.send(JSON.stringify({ image }));
+  });
+}
+
+async function uploadCroppedReceipt() {
+  const button = document.getElementById('upload-cropped-receipt');
+  const errorBox = document.getElementById('receipt-crop-error');
+  if (!receiptCropBitmap || !button) return;
+  button.disabled = true;
+  if (errorBox) errorBox.textContent = '';
+  try {
+    setReceiptUploadProgress('Preparing cropped photo…', 2);
+    const sourceWidth = receiptBitmapWidth();
+    const sourceHeight = receiptBitmapHeight();
+    const sourceX = Math.round(receiptCropBounds.x * sourceWidth);
+    const sourceY = Math.round(receiptCropBounds.y * sourceHeight);
+    const cropWidth = Math.max(1, Math.round(receiptCropBounds.width * sourceWidth));
+    const cropHeight = Math.max(1, Math.round(receiptCropBounds.height * sourceHeight));
+    const scale = Math.min(1, 2000 / Math.max(cropWidth, cropHeight));
+    const output = document.createElement('canvas');
+    output.width = Math.max(1, Math.round(cropWidth * scale));
+    output.height = Math.max(1, Math.round(cropHeight * scale));
+    output.getContext('2d').drawImage(
+      receiptCropBitmap,
+      sourceX, sourceY, cropWidth, cropHeight,
+      0, 0, output.width, output.height
+    );
+    const jpeg = await canvasToJpeg(output);
+    const image = await blobToDataUrl(jpeg);
+    document.getElementById('receipt-crop-modal')?.classList.remove('show');
+    clearReceiptCrop();
+    await uploadReceiptImage(image);
+    setReceiptUploadProgress('Uploaded — queued for reading (about 4 minutes).', 100);
+    setReceiptPageStatus('Receipt queued. Reading takes about 4 minutes.');
+    await loadReceipts();
+  } catch (error) {
+    setReceiptUploadProgress(error.message, 0, true);
+    if (document.getElementById('receipt-crop-modal')?.classList.contains('show') && errorBox) errorBox.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function escapeReceiptAttribute(value) {
+  return escapeHtml(value).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function receiptCategoryOptions(selectedCategory) {
+  const selected = RECEIPT_CATEGORIES.includes(selectedCategory) ? selectedCategory : 'other';
+  return RECEIPT_CATEGORIES.map(category => `<option value="${escapeReceiptAttribute(category)}"${category === selected ? ' selected' : ''}>${escapeHtml(category.charAt(0).toUpperCase() + category.slice(1))}</option>`).join('');
+}
+
+const RECEIPT_FLAG_LABELS = {
+  quantity_reset_without_receipt_evidence: 'Quantity set to 1',
+  quantity_from_weight: 'Weighed item',
+  quantity_from_multi_buy: 'Multi-buy',
+  quantity_from_unit_price: 'Weight worked out from the price',
+  manually_added: 'Added by you',
+  restored: 'Restored',
+  added_from_reconciliation: 'Added to make the receipt add up'
+};
+
+function humanizeReceiptFlag(flag) {
+  return RECEIPT_FLAG_LABELS[flag] ||
+    String(flag || '').replace(/_/g, ' ').replace(/^./, character => character.toUpperCase());
+}
+
+// When the gap between the rows and the printed subtotal is exactly a repeat of a
+// line the reader counted more than once, it almost always merged identical printed
+// lines (seen on a real ALDI receipt: two "Pineapples" lines became one row). Offer
+// the fix as one tap rather than asking someone to type a row on a touchscreen.
+function findReceiptMergeHints(reconciliation) {
+  const difference = Number(reconciliation.difference);
+  if (!(difference > 0.009)) return [];
+  const hints = [];
+  const seen = new Set();
+  (activeReceiptReview?.rows || []).forEach((row, index) => {
+    const counted = Number(row.modelQuantity);
+    if (row.include === false || !(counted > 1)) return;
+    if (Math.abs((Number(row.price) || 0) * (counted - 1) - difference) >= 0.011) return;
+    const label = row.name || row.printed || 'This item';
+    if (seen.has(label)) return;
+    seen.add(label);
+    hints.push({ index, label, counted, missing: counted - 1, price: Number(row.price) || 0 });
+  });
+  return hints;
+}
+
+async function openReceiptReview(id) {
+  setReceiptPageStatus('Opening receipt…');
+  try {
+    const receipt = await receiptRequest(`api/receipts/${encodeURIComponent(id)}`);
+    if (receipt.status !== 'review') {
+      setReceiptPageStatus('This receipt is not ready for review yet.', true);
+      await loadReceipts();
+      return;
+    }
+    activeReceiptReview = JSON.parse(JSON.stringify(receipt));
+    renderReceiptReview();
+    document.getElementById('receipt-review-modal')?.classList.add('show');
+    setReceiptPageStatus('Review the receipt, then confirm it.');
+  } catch (error) {
+    setReceiptPageStatus(error.message, true);
+  }
+}
+
+function renderReceiptReviewRow(row, index) {
+  const printed = row._isNew && !row.printed ? 'New row — its name will become the printed text.' : row.printed;
+  const remembered = row.remembered ? '<span class="receipt-remembered-badge">Remembered</span>' : '';
+  const flags = Array.isArray(row.flags) && row.flags.length
+    ? `<div class="receipt-row-flags">${row.flags.map(flag => `<span>${escapeHtml(humanizeReceiptFlag(flag))}</span>`).join('')}</div>` : '';
+  return `
+    <article class="receipt-review-row" data-receipt-row-index="${escapeReceiptAttribute(index)}">
+      <div class="receipt-row-heading">
+        <label class="receipt-include-toggle" for="receipt-include-${escapeReceiptAttribute(index)}">
+          <input id="receipt-include-${escapeReceiptAttribute(index)}" type="checkbox" data-receipt-field="include"${row.include === false ? '' : ' checked'}>
+          <span>Include</span>
+        </label>
+        <button type="button" class="btn btn-secondary receipt-remove-row" data-remove-receipt-row="${escapeReceiptAttribute(index)}">
+          <i class="material-icons" aria-hidden="true">remove_circle_outline</i>
+          Remove
+        </button>
+      </div>
+      <div class="receipt-printed-text"><span>Printed</span><strong>${escapeHtml(printed || '')}</strong>${remembered}</div>
+      <div class="receipt-row-fields">
+        <label class="receipt-field receipt-field-name"><span>Name</span><input type="text" data-receipt-field="name" maxlength="300" value="${escapeReceiptAttribute(row.name || '')}" required></label>
+        <label class="receipt-field"><span>Quantity</span><input type="number" data-receipt-field="quantity" min="0.01" max="100000" step="0.01" inputmode="decimal" value="${escapeReceiptAttribute(row.quantity ?? 1)}" required></label>
+        <label class="receipt-field"><span>Unit</span><input type="text" data-receipt-field="unit" maxlength="30" value="${escapeReceiptAttribute(row.unit || 'each')}" required></label>
+        <label class="receipt-field"><span>Price</span><input type="number" data-receipt-field="price" min="0" max="1000000" step="0.01" inputmode="decimal" value="${escapeReceiptAttribute(row.price ?? 0)}" required></label>
+        <label class="receipt-field receipt-field-category"><span>Category</span><select data-receipt-field="category">${receiptCategoryOptions(row.category)}</select></label>
+      </div>
+      ${flags}
+    </article>`;
+}
+
+function renderDroppedReceiptLines() {
+  const dropped = Array.isArray(activeReceiptReview?.dropped) ? activeReceiptReview.dropped : [];
+  if (!dropped.length) return '';
+  return `
+    <details class="receipt-dropped-lines">
+      <summary>Dropped lines (${escapeHtml(dropped.length)})</summary>
+      <p>The reader removed these as payment, tax, total, or weight lines. Restore any real item.</p>
+      <div class="receipt-dropped-list">
+        ${dropped.map((line, index) => `
+          <div class="receipt-dropped-row">
+            <div><strong>${escapeHtml(line.printed || 'Unlabeled line')}</strong><span>${escapeHtml(line.reason || 'Removed by the reader')}${hasReceiptNumber(line.price) ? ` · ${escapeHtml(formatReceiptMoney(line.price))}` : ''}</span></div>
+            <button type="button" class="btn btn-secondary" data-restore-receipt-line="${escapeReceiptAttribute(index)}">Restore</button>
+          </div>`).join('')}
+      </div>
+    </details>`;
+}
+
+function renderReceiptReview() {
+  const content = document.getElementById('receipt-review-content');
+  if (!content || !activeReceiptReview) return;
+  content.innerHTML = `
+    <form id="receipt-review-form">
+      <div id="receipt-reconciliation" class="receipt-reconciliation" role="status" aria-live="polite"></div>
+      <div class="receipt-document-fields">
+        <label class="receipt-field"><span>Store</span><input id="receipt-review-store" type="text" maxlength="120" value="${escapeReceiptAttribute(activeReceiptReview.store || '')}" placeholder="Store name"></label>
+        <label class="receipt-field"><span>Date</span><input id="receipt-review-date" type="date" value="${escapeReceiptAttribute(activeReceiptReview.date || '')}" required></label>
+        <div class="receipt-review-total"><span>Receipt total</span><strong>${escapeHtml(formatReceiptMoney(activeReceiptReview.total ?? activeReceiptReview.subtotal))}</strong></div>
+      </div>
+      <div class="receipt-review-toolbar">
+        <div id="receipt-review-summary"></div>
+        <button type="button" class="btn btn-secondary" data-add-receipt-row><i class="material-icons" aria-hidden="true">add</i> Add row</button>
+      </div>
+      <div id="receipt-review-rows" class="receipt-review-rows">
+        ${(activeReceiptReview.rows || []).map(renderReceiptReviewRow).join('')}
+      </div>
+      ${renderDroppedReceiptLines()}
+      <div id="receipt-review-status" class="receipt-review-status" role="status" aria-live="polite"></div>
+      <p class="receipt-photo-note">The photo is deleted when you confirm.</p>
+      <div class="receipt-review-actions">
+        <button type="button" class="btn btn-danger" data-delete-receipt><i class="material-icons" aria-hidden="true">delete</i> Delete receipt</button>
+        <div>
+          <button type="button" class="btn btn-secondary" data-save-receipt>Save changes</button>
+          <button type="button" class="btn btn-secondary" data-export-current-receipt><i class="material-icons" aria-hidden="true">download</i> Export CSV</button>
+          <button type="submit" class="btn btn-primary"><i class="material-icons" aria-hidden="true">check_circle</i> Confirm</button>
+        </div>
+      </div>
+    </form>`;
+  // Always recompute from the current rows: after add, remove, restore or the one-tap
+  // fix, the stored reconciliation is stale until the next save.
+  updateReceiptReconciliation();
+}
+
+function readReceiptReviewRows() {
+  if (!activeReceiptReview) return;
+  document.querySelectorAll('#receipt-review-rows .receipt-review-row').forEach(card => {
+    const index = Number(card.dataset.receiptRowIndex);
+    const row = activeReceiptReview.rows[index];
+    if (!row) return;
+    row.include = card.querySelector('[data-receipt-field="include"]')?.checked !== false;
+    row.name = card.querySelector('[data-receipt-field="name"]')?.value || '';
+    row.quantity = Number(card.querySelector('[data-receipt-field="quantity"]')?.value);
+    row.unit = card.querySelector('[data-receipt-field="unit"]')?.value || '';
+    row.price = Number(card.querySelector('[data-receipt-field="price"]')?.value);
+    row.category = card.querySelector('[data-receipt-field="category"]')?.value || 'other';
+  });
+  const store = document.getElementById('receipt-review-store');
+  const date = document.getElementById('receipt-review-date');
+  if (store) activeReceiptReview.store = store.value;
+  if (date) activeReceiptReview.date = date.value;
+}
+
+function calculateReceiptReviewReconciliation() {
+  const rows = (activeReceiptReview?.rows || []).filter(row => row.include !== false);
+  const rowsTotal = Math.round((rows.reduce((sum, row) => sum + (Number(row.price) || 0), 0) + Number.EPSILON) * 100) / 100;
+  const subtotal = hasReceiptNumber(activeReceiptReview?.subtotal) ? Number(activeReceiptReview.subtotal) : null;
+  const itemsPrinted = Number.isInteger(activeReceiptReview?.itemsPrinted) ? activeReceiptReview.itemsPrinted : null;
+  const difference = subtotal === null ? null : Math.round(((subtotal - rowsTotal) + Number.EPSILON) * 100) / 100;
+  return {
+    status: subtotal !== null && Math.abs(difference) < 0.01 && (itemsPrinted === null || itemsPrinted === rows.length) ? 'ok' : 'mismatch',
+    rowsTotal,
+    subtotal,
+    difference,
+    count: rows.length,
+    itemsPrinted,
+    countDifference: itemsPrinted === null ? null : itemsPrinted - rows.length
+  };
+}
+
+function updateReceiptReconciliation(reconciliation = calculateReceiptReviewReconciliation()) {
+  const banner = document.getElementById('receipt-reconciliation');
+  const summary = document.getElementById('receipt-review-summary');
+  if (!banner || !summary) return;
+  const itemLabel = `${reconciliation.count} item${reconciliation.count === 1 ? '' : 's'}`;
+  let message;
+  if (reconciliation.status === 'ok') {
+    message = `${itemLabel} · ${formatReceiptMoney(reconciliation.rowsTotal)} — matches the receipt`;
+  } else if (reconciliation.subtotal !== null && Number.isFinite(Number(reconciliation.subtotal))) {
+    const difference = Number(reconciliation.difference) || 0;
+    const issue = difference >= 0
+      ? `${formatReceiptMoney(Math.abs(difference))} is missing. Check for skipped lines.`
+      : `${formatReceiptMoney(Math.abs(difference))} is over. Check for duplicate or incorrect prices.`;
+    message = `These rows add up to ${formatReceiptMoney(reconciliation.rowsTotal)} but the receipt says ${formatReceiptMoney(reconciliation.subtotal)} — ${issue}`;
+  } else {
+    message = `These rows add up to ${formatReceiptMoney(reconciliation.rowsTotal)}. The receipt subtotal was not detected, so check every line.`;
+  }
+  if (reconciliation.itemsPrinted !== null && reconciliation.countDifference !== 0) {
+    message += ` ${reconciliation.count} rows are included; the receipt says ${reconciliation.itemsPrinted} items.`;
+  }
+  banner.textContent = message;
+  let hintBox = document.getElementById('receipt-merge-hints');
+  if (!hintBox) {
+    hintBox = document.createElement('div');
+    hintBox.id = 'receipt-merge-hints';
+    hintBox.className = 'receipt-merge-hints';
+    banner.insertAdjacentElement('afterend', hintBox);
+  }
+  const hints = reconciliation.status === 'ok' ? [] : findReceiptMergeHints(reconciliation);
+  hintBox.hidden = hints.length === 0;
+  hintBox.innerHTML = hints.map(hint => `
+    <div class="receipt-merge-hint">
+      <span>${escapeHtml(hint.label)} may be on the receipt ${hint.counted} times — the reader counted ${hint.counted} but listed it once.</span>
+      <button type="button" class="btn btn-secondary" data-duplicate-receipt-row="${hint.index}">
+        <i class="material-icons" aria-hidden="true">add</i> Add ${hint.missing === 1 ? 'another' : hint.missing + ' more'} ${escapeHtml(hint.label)}
+      </button>
+    </div>`).join('');
+  banner.classList.toggle('is-match', reconciliation.status === 'ok');
+  banner.classList.toggle('needs-attention', reconciliation.status !== 'ok');
+  summary.textContent = `${itemLabel} included · ${formatReceiptMoney(reconciliation.rowsTotal)} row total`;
+}
+
+function handleReceiptReviewInput() {
+  readReceiptReviewRows();
+  updateReceiptReconciliation();
+}
+
+async function handleReceiptReviewClick(event) {
+  const duplicate = event.target.closest('[data-duplicate-receipt-row]');
+  if (duplicate) {
+    readReceiptReviewRows();
+    const index = Number(duplicate.dataset.duplicateReceiptRow);
+    const source = activeReceiptReview.rows[index];
+    if (!source) return;
+    const copies = Math.max(1, Number(source.modelQuantity) - 1);
+    const added = Array.from({ length: copies }, (_, n) => ({
+      ...source,
+      id: `dup-${Date.now()}-${n}`,
+      modelQuantity: 1,
+      flags: ['added_from_reconciliation'],
+      _isNew: true
+    }));
+    source.modelQuantity = 1;
+    activeReceiptReview.rows.splice(index + 1, 0, ...added);
+    renderReceiptReview();
+    return;
+  }
+  const remove = event.target.closest('[data-remove-receipt-row]');
+  if (remove) {
+    readReceiptReviewRows();
+    activeReceiptReview.rows.splice(Number(remove.dataset.removeReceiptRow), 1);
+    renderReceiptReview();
+    return;
+  }
+  if (event.target.closest('[data-add-receipt-row]')) {
+    readReceiptReviewRows();
+    activeReceiptReview.rows.push({
+      id: `new-${Date.now()}`,
+      printed: '',
+      name: '',
+      category: 'other',
+      quantity: 1,
+      unit: 'each',
+      price: 0,
+      include: true,
+      remembered: false,
+      flags: ['manually_added'],
+      _isNew: true
+    });
+    renderReceiptReview();
+    document.querySelector('#receipt-review-rows .receipt-review-row:last-child [data-receipt-field="name"]')?.focus();
+    return;
+  }
+  const restore = event.target.closest('[data-restore-receipt-line]');
+  if (restore) {
+    readReceiptReviewRows();
+    const line = activeReceiptReview.dropped?.[Number(restore.dataset.restoreReceiptLine)];
+    if (!line) return;
+    activeReceiptReview.rows.push({
+      id: `restored-${Date.now()}`,
+      printed: line.printed || '',
+      name: line.printed || '',
+      category: 'other',
+      quantity: 1,
+      unit: 'each',
+      price: Number(line.price) || 0,
+      include: true,
+      remembered: false,
+      flags: ['restored'],
+      _isNew: true
+    });
+    renderReceiptReview();
+    const restoredCard = document.querySelector('#receipt-review-rows .receipt-review-row:last-child');
+    restoredCard?.scrollIntoView({ block: 'nearest' });
+    return;
+  }
+  const saveButton = event.target.closest('[data-save-receipt]');
+  if (saveButton) {
+    await saveActiveReceiptReview(saveButton, true);
+    return;
+  }
+  const exportButton = event.target.closest('[data-export-current-receipt]');
+  if (exportButton) {
+    const saved = await saveActiveReceiptReview(exportButton, false);
+    if (saved) await exportReceiptCsv(activeReceiptReview.id, exportButton);
+    return;
+  }
+  if (event.target.closest('[data-delete-receipt]')) await deleteActiveReceipt();
+}
+
+async function handleReceiptReviewSubmit(event) {
+  if (event.target.id !== 'receipt-review-form') return;
+  event.preventDefault();
+  const submit = event.submitter || event.target.querySelector('[type="submit"]');
+  const saved = await saveActiveReceiptReview(submit, false);
+  if (!saved) return;
+  setReceiptReviewStatus('Confirming receipt…');
+  try {
+    await receiptRequest(`api/receipts/${encodeURIComponent(activeReceiptReview.id)}/confirm`, { method: 'POST' });
+    document.getElementById('receipt-review-modal')?.classList.remove('show');
+    activeReceiptReview = null;
+    setReceiptPageStatus('Receipt confirmed. Its photo has been deleted.');
+    await loadReceipts();
+  } catch (error) {
+    setReceiptReviewStatus(error.message, true);
+  } finally {
+    if (submit) submit.disabled = false;
+  }
+}
+
+function receiptReviewPayload() {
+  readReceiptReviewRows();
+  const rows = activeReceiptReview.rows.map(row => {
+    const result = {
+      printed: row.printed || row.name,
+      name: row.name.trim(),
+      category: RECEIPT_CATEGORIES.includes(row.category) ? row.category : 'other',
+      quantity: Number(row.quantity),
+      unit: row.unit.trim(),
+      price: Number(row.price),
+      include: row.include !== false
+    };
+    if (!row._isNew) result.id = row.id;
+    return result;
+  });
+  return { store: activeReceiptReview.store.trim(), date: activeReceiptReview.date, rows };
+}
+
+function setReceiptReviewStatus(message, isError = false) {
+  const status = document.getElementById('receipt-review-status');
+  if (!status) return;
+  status.textContent = message;
+  status.classList.toggle('is-error', isError);
+}
+
+async function saveActiveReceiptReview(button, rerender) {
+  if (!activeReceiptReview) return false;
+  const form = document.getElementById('receipt-review-form');
+  if (form && !form.reportValidity()) return false;
+  if (button) button.disabled = true;
+  setReceiptReviewStatus('Saving corrections…');
+  try {
+    const saved = await receiptRequest(`api/receipts/${encodeURIComponent(activeReceiptReview.id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(receiptReviewPayload())
+    });
+    activeReceiptReview = JSON.parse(JSON.stringify(saved));
+    if (rerender) {
+      renderReceiptReview();
+      setReceiptReviewStatus('Changes saved.');
+    }
+    return true;
+  } catch (error) {
+    setReceiptReviewStatus(error.message, true);
+    return false;
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function exportReceiptCsv(id, button) {
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch(`api/receipts/${encodeURIComponent(id)}/csv`);
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'The CSV could not be exported.');
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `receipt-${id}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    if (activeReceiptReview?.id === id) setReceiptReviewStatus('CSV exported.');
+    else setReceiptPageStatus('CSV exported.');
+  } catch (error) {
+    if (activeReceiptReview?.id === id) setReceiptReviewStatus(error.message, true);
+    else setReceiptPageStatus(error.message, true);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function deleteActiveReceipt() {
+  if (!activeReceiptReview) return;
+  const confirmed = await requestAppConfirmation(
+    'Delete receipt?',
+    'This deletes the receipt and its photo. This cannot be undone.',
+    'Delete receipt'
+  );
+  if (!confirmed) return;
+  setReceiptReviewStatus('Deleting receipt…');
+  try {
+    await receiptRequest(`api/receipts/${encodeURIComponent(activeReceiptReview.id)}`, { method: 'DELETE' });
+    document.getElementById('receipt-review-modal')?.classList.remove('show');
+    activeReceiptReview = null;
+    setReceiptPageStatus('Receipt deleted.');
+    await loadReceipts();
+  } catch (error) {
+    setReceiptReviewStatus(error.message, true);
+  }
+}
+
+async function initializeReceiptReaderSettings() {
+  const form = document.getElementById('receipt-reader-settings-form');
+  const testButton = document.getElementById('test-receipt-reader');
+  if (!form || form.dataset.initialized === 'true') return;
+  form.dataset.initialized = 'true';
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    await saveReceiptReaderSettings(true);
+  });
+  testButton?.addEventListener('click', testReceiptReaderConnection);
+  await loadReceiptReaderSettings();
+}
+
+function setReceiptReaderSettingsStatus(message, state = '') {
+  const status = document.getElementById('receipt-reader-settings-status');
+  if (!status) return;
+  status.textContent = message;
+  status.classList.toggle('is-error', state === 'error');
+  status.classList.toggle('is-success', state === 'success');
+}
+
+async function loadReceiptReaderSettings() {
+  try {
+    const settings = await receiptRequest('api/receipt-settings');
+    const url = document.getElementById('receipt-model-url');
+    const model = document.getElementById('receipt-model-name');
+    if (url) url.value = settings.url || '';
+    if (model) model.value = settings.model || '';
+    setReceiptReaderSettingsStatus('Receipt reader settings loaded.');
+  } catch (error) {
+    setReceiptReaderSettingsStatus(error.message, 'error');
+  }
+}
+
+async function saveReceiptReaderSettings(announce) {
+  const form = document.getElementById('receipt-reader-settings-form');
+  if (!form?.reportValidity()) return null;
+  const submitButtons = form.querySelectorAll('button');
+  submitButtons.forEach(button => { button.disabled = true; });
+  if (announce) setReceiptReaderSettingsStatus('Saving receipt reader…');
+  try {
+    const settings = await receiptRequest('api/receipt-settings', {
+      method: 'PUT',
+      body: JSON.stringify({
+        url: document.getElementById('receipt-model-url').value,
+        model: document.getElementById('receipt-model-name').value
+      })
+    });
+    if (announce) setReceiptReaderSettingsStatus('Receipt reader settings saved.', 'success');
+    return settings;
+  } catch (error) {
+    setReceiptReaderSettingsStatus(error.message, 'error');
+    return null;
+  } finally {
+    submitButtons.forEach(button => { button.disabled = false; });
+  }
+}
+
+async function testReceiptReaderConnection() {
+  const button = document.getElementById('test-receipt-reader');
+  const url = document.getElementById('receipt-model-url')?.value || 'the configured address';
+  const model = document.getElementById('receipt-model-name')?.value || 'the configured model';
+  const saved = await saveReceiptReaderSettings(false);
+  if (!saved) return;
+  if (button) button.disabled = true;
+  setReceiptReaderSettingsStatus(`Connecting to ${url}…`);
+  try {
+    const result = await receiptRequest('api/receipt-settings/test', { method: 'POST' });
+    if (result.present) setReceiptReaderSettingsStatus(`Connected — ${result.model} is installed`, 'success');
+    else setReceiptReaderSettingsStatus(`Connected, but ${result.model || model} is not installed.`, 'error');
+  } catch (error) {
+    setReceiptReaderSettingsStatus(`Can't reach the model at ${url}. ${error.message}`, 'error');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 async function getDefaultGroceryList() {
   const lists = await listRequest('api/lists');
   const grocery = lists.find(list => list.type === 'grocery') || lists.find(list => list.name.toLowerCase() === 'grocery');
@@ -863,70 +1816,1206 @@ async function loadGroceryList() {
   } catch (error) { items.innerHTML = `<li class="lists-error">${escapeHtml(error.message)}</li>`; }
 }
 
-async function loadGameProfiles(profileList = document.getElementById('profile-list')) {
-  if (!profileList) return;
-  profileList.innerHTML = '<div class="profile-list-state"><i class="material-icons spin" aria-hidden="true">refresh</i> Loading people…</div>';
+async function screenTimeRequest(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data.error || 'Screen time could not be updated');
+    error.status = response.status;
+    error.data = data;
+    throw error;
+  }
+  return data;
+}
 
+async function loadGamesPageData({ resumeActive = true } = {}) {
+  const status = document.getElementById('games-page-status');
   try {
-    const response = await fetch('api/users');
-    if (!response.ok) throw new Error('Failed to load users');
-    const users = await response.json();
-    profileList.innerHTML = '';
+    const [screenTime, games] = await Promise.all([
+      screenTimeRequest('api/screen-time'),
+      screenTimeRequest('api/games')
+    ]);
+    screenTimeSnapshot = screenTime;
+    gameLibrary = Array.isArray(games) ? games : [];
+    if (selectedGameProfileId && !screenTime.profiles.some(profile => profile.id === selectedGameProfileId)) {
+      selectedGameProfileId = null;
+    }
+    renderGamesPage();
+    void syncFaceRecognitionState();
+    if (resumeActive && screenTime.activeSession && !activeGameSession) {
+      const game = gameLibrary.find(candidate => candidate.id === screenTime.activeSession.gameId);
+      const profile = screenTime.profiles.find(candidate => candidate.id === screenTime.activeSession.profileId);
+      if (game && profile) {
+        selectedGameProfileId = profile.id;
+        openRunningGame(screenTime.activeSession, game, profile);
+      }
+    }
+  } catch (error) {
+    console.error('[ERROR] Failed to load games:', error);
+    if (status) status.textContent = error.message;
+    const grid = document.getElementById('games-grid');
+    if (grid) grid.innerHTML = `<div class="games-error"><i class="material-icons" aria-hidden="true">error_outline</i><span>${escapeHtml(error.message)}</span><button type="button" class="btn btn-secondary" id="retry-games">Try again</button></div>`;
+    document.getElementById('retry-games')?.addEventListener('click', () => loadGamesPageData());
+  }
+}
 
-    if (!Array.isArray(users) || users.length === 0) {
-      profileList.innerHTML = `
-        <div class="profile-list-empty">
-          <i class="material-icons" aria-hidden="true">person_off</i>
-          <div>
-            <strong>No people yet</strong>
-            <span>Add a household member in Settings to choose a game profile.</span>
-          </div>
-          <button type="button" class="btn btn-secondary" id="open-user-settings">Open Settings</button>
-        </div>
-      `;
-      document.getElementById('open-user-settings')?.addEventListener('click', openUserManagementSettings);
+function formatRemainingMinutes(profile) {
+  if (!screenTimeSnapshot?.settings.enabled) return 'No limit';
+  if (profile.remainingMinutes <= 0) return 'No time left';
+  if (profile.remainingMinutes < 1) return 'Less than 1 min left';
+  return `${Math.ceil(profile.remainingMinutes)} min left`;
+}
+
+function renderGamesPage() {
+  const profiles = screenTimeSnapshot?.profiles || [];
+  const selected = profiles.find(profile => profile.id === selectedGameProfileId) || null;
+  const profileList = document.getElementById('profile-list');
+  const status = document.getElementById('games-page-status');
+  const mode = document.getElementById('screen-time-mode');
+  const gate = document.getElementById('game-gate-panel');
+  const blockingList = document.getElementById('game-blocking-list');
+  const hint = document.getElementById('game-selection-hint');
+  const grid = document.getElementById('games-grid');
+  if (!profileList || !grid) return;
+
+  mode.textContent = screenTimeSnapshot.settings.enabled ? 'Daily limits on' : 'Limits paused';
+  if (!profiles.length) {
+    profileList.innerHTML = `<div class="profile-list-empty"><i class="material-icons" aria-hidden="true">person_off</i><div><strong>No people yet</strong><span>Add a household member in Settings first.</span></div><button type="button" class="btn btn-secondary" id="open-user-settings">Open Settings</button></div>`;
+    document.getElementById('open-user-settings')?.addEventListener('click', openUserManagementSettings);
+  } else {
+    profileList.innerHTML = profiles.map(profile => `
+      <button type="button" class="profile-item${profile.id === selectedGameProfileId ? ' selected' : ''}" data-game-profile="${escapeHtml(profile.id)}" aria-pressed="${profile.id === selectedGameProfileId}" style="--profile-color:${escapeHtml(getValidCalendarColor(profile.color))}">
+        <span class="profile-avatar">${escapeHtml(getProfileInitials(profile.name))}</span>
+        <span class="profile-info"><span class="profile-name">${escapeHtml(profile.name || 'Unnamed')}</span><span class="profile-playtime">${escapeHtml(formatRemainingMinutes(profile))}</span></span>
+      </button>`).join('');
+  }
+
+  const isBlocked = Boolean(selected?.blocking?.length && !pendingGameOverridePin);
+  gate.hidden = !isBlocked;
+  if (isBlocked) {
+    blockingList.innerHTML = selected.blocking.map(item => item.type === 'chore'
+      ? `<li><button type="button" class="game-blocking-chore" data-complete-blocking-chore="${escapeHtml(item.id)}"><i class="material-icons" aria-hidden="true">check_box_outline_blank</i><span>${escapeHtml(item.title)}</span></button></li>`
+      : `<li><i class="material-icons" aria-hidden="true">routine</i><span>${escapeHtml(item.title)}</span></li>`).join('');
+  }
+  hint.hidden = Boolean(selected) || isBlocked;
+  if (status) {
+    status.textContent = !selected ? 'Choose who is playing to begin.'
+      : isBlocked ? `${selected.name} has ${selected.blocking.length} item${selected.blocking.length === 1 ? '' : 's'} to finish.`
+        : pendingGameOverridePin ? `Parent override ready for ${selected.name}. Choose one game.`
+          : `${selected.name} has ${formatRemainingMinutes(selected).toLowerCase()}.`;
+  }
+
+  if (!gameLibrary.length) {
+    grid.innerHTML = '<div class="games-empty"><i class="material-icons" aria-hidden="true">sports_esports</i><span>No games have been added yet.</span></div>';
+    return;
+  }
+  const disabled = !selected || isBlocked || Boolean(screenTimeSnapshot.activeSession) ||
+    (screenTimeSnapshot.settings.enabled && selected.remainingMinutes <= 0);
+  grid.innerHTML = gameLibrary.map(game => `
+    <article class="game-item${disabled ? ' is-disabled' : ''}">
+      <button type="button" class="game-remove" data-remove-game="${escapeHtml(game.id)}" aria-label="Remove ${escapeHtml(game.title)}"><i class="material-icons" aria-hidden="true">delete</i></button>
+      <button type="button" class="game-launch" data-launch-game="${escapeHtml(game.id)}" ${disabled ? 'disabled' : ''}>
+        <span class="game-icon"><i class="material-icons" aria-hidden="true">${escapeHtml(game.icon || 'sports_esports')}</i></span>
+        <span class="game-title">${escapeHtml(game.title)}</span>
+        <span class="game-availability">${!selected ? 'Choose a player' : isBlocked ? 'Chores first' : screenTimeSnapshot.activeSession ? 'Screen in use' : (screenTimeSnapshot.settings.enabled && selected.remainingMinutes <= 0) ? 'No time left' : 'Play'}</span>
+      </button>
+    </article>`).join('');
+}
+
+function selectGameProfile(profileId, source = 'manual') {
+  if (!screenTimeSnapshot?.profiles?.some(profile => profile.id === profileId)) return false;
+  selectedGameProfileId = profileId;
+  pendingGameOverridePin = null;
+  console.log(`[INFO] Game profile selected by ${source}:`, profileId);
+  renderGamesPage();
+  return true;
+}
+window.selectGameProfile = selectGameProfile;
+
+async function completeBlockingChoreFromGames(event) {
+  const button = event.target.closest('[data-complete-blocking-chore]');
+  if (!button || button.disabled) return;
+  const status = document.getElementById('games-page-status');
+  button.disabled = true;
+  if (status) status.textContent = 'Completing chore…';
+  try {
+    const response = await fetch(`api/chores/${encodeURIComponent(button.dataset.completeBlockingChore)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'completed' })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Unable to complete this chore');
+    const refresh = await fetch('api/chores');
+    if (!refresh.ok) throw new Error('The chore was completed, but stars could not be refreshed yet');
+    await loadGamesPageData({ resumeActive: false });
+  } catch (error) {
+    if (status) status.textContent = error.message;
+    button.disabled = false;
+  }
+}
+
+async function faceProfileRequest(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data.error || 'Face recognition could not be updated');
+    error.status = response.status;
+    error.data = data;
+    throw error;
+  }
+  return data;
+}
+
+function loadFaceApi() {
+  if (window.faceapi) return Promise.resolve(window.faceapi);
+  if (faceApiScriptPromise) return faceApiScriptPromise;
+  faceApiScriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'vendor/face-api/face-api.js';
+    script.async = true;
+    script.onload = () => window.faceapi ? resolve(window.faceapi) : reject(new Error('Face recognition library did not initialize'));
+    script.onerror = () => reject(new Error('Face recognition library could not be loaded'));
+    document.head.appendChild(script);
+  }).catch(error => {
+    faceApiScriptPromise = null;
+    throw error;
+  });
+  return faceApiScriptPromise;
+}
+
+// TensorFlow.js ranks its WebAssembly backend first whenever WebGL is unavailable,
+// but that backend fetches its .wasm binaries from a CDN — unreachable offline and
+// through HA ingress — and then every call fails with "backend 'wasm' has not yet
+// been initialized". Pin WebGL (the panel's Intel GPU) and fall back to the
+// pure-JS CPU backend, which is slower but needs nothing downloaded.
+// Detector confidence answers "is this a face?", not "whose face is it?". The tiny
+// detector scores a plainly visible face around 0.6-0.85, so a 0.8 floor discarded
+// nearly every frame before matching (measured: an enrolled face at 0.685 was never
+// compared). Protection against picking the wrong child comes from the descriptor
+// distance threshold, the runner-up margin, three consecutive frames and "Not me".
+// Enrolment asks a little more, because a poor sample degrades every later match.
+const FACE_DETECT_MIN_SCORE = 0.5;
+const FACE_ENROL_MIN_SCORE = 0.6;
+
+async function ensureFaceBackend(faceapi) {
+  const tf = faceapi.tf;
+  for (const backend of ['webgl', 'cpu']) {
+    try {
+      if (await tf.setBackend(backend)) {
+        await tf.ready();
+        return backend;
+      }
+    } catch (error) {
+      console.warn(`[WARN] TensorFlow.js backend '${backend}' unavailable:`, error);
+    }
+  }
+  throw new Error('No usable TensorFlow.js backend');
+}
+
+async function loadFaceModels() {
+  if (faceModelsPromise) return faceModelsPromise;
+  faceModelsPromise = loadFaceApi().then(async faceapi => {
+    await ensureFaceBackend(faceapi);
+    await Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri('models'),
+      faceapi.nets.faceLandmark68TinyNet.loadFromUri('models'),
+      faceapi.nets.faceRecognitionNet.loadFromUri('models')
+    ]);
+    return faceapi;
+  }).catch(error => {
+    faceModelsPromise = null;
+    throw error;
+  });
+  return faceModelsPromise;
+}
+
+function stopMediaStream(stream) {
+  if (!stream) return;
+  stream.getTracks().forEach(track => track.stop());
+}
+
+async function openPreferredFaceCamera(video, savedDeviceId) {
+  if (!navigator.mediaDevices?.getUserMedia || !navigator.mediaDevices?.enumerateDevices) {
+    throw new Error('Camera access is not supported');
+  }
+  let stream = null;
+  if (savedDeviceId) {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: savedDeviceId }, width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false
+      });
+    } catch (error) {
+      console.info('[INFO] Saved face camera is unavailable; choosing another camera');
+    }
+  }
+  if (!stream) {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 640 }, height: { ideal: 480 } },
+      audio: false
+    });
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const preferred = devices.find(device => device.kind === 'videoinput' && device.label.includes('S2340T'));
+    const activeDeviceId = stream.getVideoTracks()[0]?.getSettings?.().deviceId;
+    if (preferred?.deviceId && preferred.deviceId !== activeDeviceId) {
+      stopMediaStream(stream);
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: preferred.deviceId }, width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false
+      });
+    }
+  }
+  video.srcObject = stream;
+  try {
+    await video.play();
+  } catch (error) {
+    stopMediaStream(stream);
+    video.srcObject = null;
+    throw error;
+  }
+  return stream;
+}
+
+function isGamesPageVisible() {
+  return Boolean(document.getElementById('games-content')?.classList.contains('active-content'));
+}
+
+function isGameSessionActive() {
+  return Boolean(activeGameSession || screenTimeSnapshot?.activeSession);
+}
+
+function setFaceCameraStatus(message, state = '') {
+  const indicator = document.getElementById('face-camera-status');
+  const text = document.getElementById('face-camera-status-text');
+  if (!indicator || !text) return;
+  indicator.hidden = !message;
+  indicator.classList.toggle('is-active', state === 'active');
+  indicator.classList.toggle('is-unavailable', state === 'unavailable');
+  text.textContent = message;
+}
+
+async function loadFaceRecognitionForGames() {
+  try {
+    faceDescriptorSnapshot = await faceProfileRequest('api/face-profiles/descriptors');
+    await syncFaceRecognitionState();
+  } catch (error) {
+    stopFaceRecognitionCamera();
+    setFaceCameraStatus('Camera unavailable — tap your name instead', 'unavailable');
+  }
+}
+
+function buildFaceMatcher(faceapi) {
+  const entries = Object.entries(faceDescriptorSnapshot?.profiles || {})
+    .filter(([, profile]) => Array.isArray(profile.descriptors) && profile.descriptors.length)
+    .map(([profileId, profile]) => new faceapi.LabeledFaceDescriptors(
+      profileId,
+      profile.descriptors.map(descriptor => new Float32Array(descriptor))
+    ));
+  faceRecognitionMatcher = entries.length
+    ? new faceapi.FaceMatcher(entries, faceDescriptorSnapshot.threshold || 0.5)
+    : null;
+  return entries.length;
+}
+
+async function syncFaceRecognitionState() {
+  if (!faceDescriptorSnapshot?.enabled) {
+    stopFaceRecognitionCamera({ clearBanner: true });
+    setFaceCameraStatus('');
+    return;
+  }
+  if (!isGamesPageVisible() || document.hidden || isGameSessionActive() || document.querySelector('.modal.show')) {
+    stopFaceRecognitionCamera({ clearBanner: true });
+    if (isGamesPageVisible() && (isGameSessionActive() || document.querySelector('.modal.show'))) {
+      setFaceCameraStatus('Camera paused');
+    }
+    return;
+  }
+  if (faceRecognitionStream) return;
+  const enrolledCount = Object.keys(faceDescriptorSnapshot.profiles || {}).length;
+  if (!enrolledCount) {
+    setFaceCameraStatus('No faces enrolled — tap your name instead');
+    return;
+  }
+  const runId = ++faceRecognitionRunId;
+  try {
+    setFaceCameraStatus('Starting camera…');
+    const faceapi = await loadFaceModels();
+    if (runId !== faceRecognitionRunId || !isGamesPageVisible() || document.hidden) return;
+    if (!buildFaceMatcher(faceapi)) return;
+    const video = document.getElementById('face-recognition-video');
+    const stream = await openPreferredFaceCamera(video, faceDescriptorSnapshot.deviceId);
+    if (runId !== faceRecognitionRunId || !isGamesPageVisible() || document.hidden || isGameSessionActive() || document.querySelector('.modal.show')) {
+      stopMediaStream(stream);
+      if (video) video.srcObject = null;
       return;
     }
+    faceRecognitionStream = stream;
+    setFaceCameraStatus('Camera on', 'active');
+    scheduleFaceRecognitionFrame(runId, 0);
+  } catch (error) {
+    if (runId !== faceRecognitionRunId) return;
+    console.warn('[WARN] Face recognition camera unavailable:', error);
+    stopFaceRecognitionCamera();
+    setFaceCameraStatus('Camera unavailable — tap your name instead', 'unavailable');
+  }
+}
 
-    users.forEach(user => {
-      const profile = document.createElement('button');
-      profile.type = 'button';
-      profile.className = 'profile-item';
-      profile.dataset.profile = user.id;
-      profile.style.setProperty('--profile-color', getValidCalendarColor(user.color));
+function scheduleFaceRecognitionFrame(runId, delay = 500) {
+  if (faceRecognitionTimer) window.clearTimeout(faceRecognitionTimer);
+  faceRecognitionTimer = window.setTimeout(() => runFaceRecognitionFrame(runId), delay);
+}
 
-      const avatar = document.createElement('span');
-      avatar.className = 'profile-avatar';
-      avatar.textContent = getProfileInitials(user.name);
+async function runFaceRecognitionFrame(runId) {
+  if (runId !== faceRecognitionRunId || !faceRecognitionStream) return;
+  if (!isGamesPageVisible() || document.hidden || isGameSessionActive() || document.querySelector('.modal.show')) {
+    stopFaceRecognitionCamera({ clearBanner: !isGamesPageVisible() });
+    return;
+  }
+  if (pendingFaceSelection) {
+    scheduleFaceRecognitionFrame(runId);
+    return;
+  }
+  try {
+    const video = document.getElementById('face-recognition-video');
+    if (!video || video.readyState < 2) {
+      scheduleFaceRecognitionFrame(runId);
+      return;
+    }
+    const faceapi = window.faceapi;
+    const detections = await faceapi.detectAllFaces(
+      video,
+      new faceapi.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.5 })
+    ).withFaceLandmarks(true).withFaceDescriptors();
+    if (runId !== faceRecognitionRunId || !faceRecognitionStream) return;
+    if (document.hidden || isGameSessionActive() || document.querySelector('.modal.show')) {
+      stopFaceRecognitionCamera({ clearBanner: true });
+      return;
+    }
+    const detection = detections.length === 1 && detections[0].detection.score >= FACE_DETECT_MIN_SCORE ? detections[0] : null;
+    const winner = detection ? getUnambiguousFaceWinner(detection.descriptor) : null;
+    if (!winner || winner === selectedGameProfileId || (suppressedFaceProfiles.get(winner) || 0) > Date.now()) {
+      faceRecognitionStreak = { profileId: null, count: 0 };
+    } else if (faceRecognitionStreak.profileId === winner) {
+      faceRecognitionStreak.count += 1;
+    } else {
+      faceRecognitionStreak = { profileId: winner, count: 1 };
+    }
+    if (faceRecognitionStreak.count >= 3 && winner !== selectedGameProfileId) {
+      showPendingFaceSelection(winner);
+      faceRecognitionStreak = { profileId: null, count: 0 };
+    }
+  } catch (error) {
+    console.warn('[WARN] Face recognition frame failed:', error);
+  }
+  scheduleFaceRecognitionFrame(runId);
+}
 
-      const name = document.createElement('span');
-      name.className = 'profile-name';
-      name.textContent = user.name || 'Unnamed user';
+function getUnambiguousFaceWinner(descriptor) {
+  if (!faceRecognitionMatcher || !window.faceapi) return null;
+  const bestMatch = faceRecognitionMatcher.findBestMatch(descriptor);
+  if (bestMatch.label === 'unknown') return null;
+  const distances = Object.entries(faceDescriptorSnapshot.profiles || {}).map(([profileId, profile]) => ({
+    profileId,
+    distance: Math.min(...profile.descriptors.map(sample =>
+      window.faceapi.euclideanDistance(descriptor, new Float32Array(sample))))
+  })).sort((a, b) => a.distance - b.distance);
+  const best = distances[0];
+  const second = distances[1];
+  const threshold = faceDescriptorSnapshot.threshold || 0.5;
+  if (!best || best.profileId !== bestMatch.label || best.distance > threshold) return null;
+  if (second && second.distance - best.distance < 0.08) return null;
+  return best.profileId;
+}
 
-      profile.append(avatar, name);
-      profileList.appendChild(profile);
+function showPendingFaceSelection(profileId) {
+  const profile = screenTimeSnapshot?.profiles.find(candidate => candidate.id === profileId);
+  const banner = document.getElementById('face-match-banner');
+  const message = document.getElementById('face-match-message');
+  if (!profile || !banner || !message || pendingFaceSelection) return;
+  let seconds = 3;
+  const update = () => { message.textContent = `Hi ${profile.name || 'there'}! Choosing you in ${seconds}…`; };
+  update();
+  banner.hidden = false;
+  const interval = window.setInterval(() => {
+    seconds -= 1;
+    if (seconds > 0) update();
+  }, 1000);
+  const timeout = window.setTimeout(() => {
+    clearPendingFaceSelection();
+    window.selectGameProfile(profileId, 'camera');
+  }, 3000);
+  pendingFaceSelection = { profileId, interval, timeout };
+}
+
+function clearPendingFaceSelection() {
+  if (pendingFaceSelection) {
+    window.clearInterval(pendingFaceSelection.interval);
+    window.clearTimeout(pendingFaceSelection.timeout);
+  }
+  pendingFaceSelection = null;
+  const banner = document.getElementById('face-match-banner');
+  if (banner) banner.hidden = true;
+}
+
+function rejectPendingFaceSelection() {
+  if (!pendingFaceSelection) return;
+  suppressedFaceProfiles.set(pendingFaceSelection.profileId, Date.now() + 30000);
+  clearPendingFaceSelection();
+  faceRecognitionStreak = { profileId: null, count: 0 };
+}
+
+function stopFaceRecognitionCamera({ clearBanner = false } = {}) {
+  faceRecognitionRunId += 1;
+  if (faceRecognitionTimer) window.clearTimeout(faceRecognitionTimer);
+  faceRecognitionTimer = null;
+  stopMediaStream(faceRecognitionStream);
+  faceRecognitionStream = null;
+  const video = document.getElementById('face-recognition-video');
+  if (video?.srcObject) {
+    stopMediaStream(video.srcObject);
+    video.srcObject = null;
+  }
+  faceRecognitionStreak = { profileId: null, count: 0 };
+  if (clearBanner) clearPendingFaceSelection();
+}
+
+async function handleAddGame(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const errorBox = document.getElementById('add-game-error');
+  const submit = form.querySelector('[type="submit"]');
+  submit.disabled = true;
+  errorBox.textContent = '';
+  try {
+    await screenTimeRequest('api/games', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: document.getElementById('gameTitle').value,
+        url: document.getElementById('gameURL').value,
+        icon: document.getElementById('gameIcon').value
+      })
+    });
+    form.reset();
+    document.getElementById('gameIcon').value = 'sports_esports';
+    closeModal(document.getElementById('add-game-modal'));
+    await loadGamesPageData({ resumeActive: false });
+  } catch (error) {
+    errorBox.textContent = error.message;
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function startGameSession(gameId, pin = pendingGameOverridePin) {
+  const game = gameLibrary.find(candidate => candidate.id === gameId);
+  const profile = screenTimeSnapshot?.profiles.find(candidate => candidate.id === selectedGameProfileId);
+  if (!game || !profile) return;
+  const status = document.getElementById('games-page-status');
+  try {
+    const session = await screenTimeRequest('api/screen-time/sessions', {
+      method: 'POST',
+      body: JSON.stringify({ profileId: profile.id, gameId: game.id, ...(pin ? { pin } : {}) })
+    });
+    pendingGameOverridePin = null;
+    screenTimeSnapshot.activeSession = session;
+    openRunningGame(session, game, profile);
+    renderGamesPage();
+  } catch (error) {
+    if (error.data?.blocking) {
+      screenTimeSnapshot.profiles.find(candidate => candidate.id === profile.id).blocking = error.data.blocking;
+    }
+    pendingGameOverridePin = null;
+    if (status) status.textContent = error.message;
+    renderGamesPage();
+    if (pin && error.status === 403) openGamePinModal('override', { error: error.message });
+  }
+}
+
+function openRunningGame(session, game, profile) {
+  activeGameSession = session;
+  activeGame = game;
+  selectedGameProfileId = profile.id;
+  gameServerRemainingSeconds = session.remainingSeconds;
+  gameServerSyncTime = Date.now();
+  shownGameWarnings = new Set();
+  const modal = document.getElementById('game-focus-modal');
+  const iframe = document.getElementById('game-iframe');
+  const timeUp = document.getElementById('game-time-up');
+  document.getElementById('game-modal-title').textContent = game.title;
+  document.getElementById('game-timer-user').textContent = profile.name;
+  timeUp.hidden = true;
+  iframe.hidden = false;
+  iframe.src = game.url;
+  modal.classList.add('show');
+  stopFaceRecognitionCamera({ clearBanner: true });
+  clearGameTimers();
+  renderGameCountdown();
+  gameTimerInterval = window.setInterval(renderGameCountdown, 1000);
+  gameHeartbeatInterval = window.setInterval(sendGameHeartbeat, 30000);
+}
+
+function renderGameCountdown() {
+  const display = document.getElementById('game-timer-display');
+  if (!display || !activeGameSession) return;
+  if (gameServerRemainingSeconds === null) {
+    display.textContent = 'No limit';
+    return;
+  }
+  const elapsed = Math.floor((Date.now() - gameServerSyncTime) / 1000);
+  const remaining = Math.max(0, gameServerRemainingSeconds - elapsed);
+  const minutes = Math.floor(remaining / 60);
+  const seconds = remaining % 60;
+  display.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  showGameWarningIfNeeded(remaining);
+  if (remaining <= 0) showGameTimeUp();
+}
+
+function showGameWarningIfNeeded(remainingSeconds) {
+  const warnings = screenTimeSnapshot?.settings.warnAtMinutes || [];
+  const threshold = warnings.find(minutes => remainingSeconds <= minutes * 60 && remainingSeconds > (minutes - 1) * 60);
+  if (!threshold || shownGameWarnings.has(threshold)) return;
+  shownGameWarnings.add(threshold);
+  const banner = document.getElementById('game-warning-banner');
+  banner.textContent = `${threshold} minute${threshold === 1 ? '' : 's'} left`;
+  banner.hidden = false;
+  window.setTimeout(() => { if (banner) banner.hidden = true; }, 5000);
+}
+
+async function sendGameHeartbeat() {
+  if (!activeGameSession) return;
+  try {
+    const result = await screenTimeRequest(`api/screen-time/sessions/${encodeURIComponent(activeGameSession.id)}/heartbeat`, { method: 'POST', body: '{}' });
+    gameServerRemainingSeconds = result.remainingSeconds;
+    gameServerSyncTime = Date.now();
+    renderGameCountdown();
+  } catch (error) {
+    if (error.status === 409) showGameTimeUp();
+  }
+}
+
+function showGameTimeUp() {
+  if (!activeGameSession) return;
+  clearGameTimers();
+  const profile = screenTimeSnapshot?.profiles.find(candidate => candidate.id === activeGameSession.profileId);
+  const iframe = document.getElementById('game-iframe');
+  iframe.src = 'about:blank';
+  iframe.hidden = true;
+  document.getElementById('game-time-up-title').textContent = `Time’s up, ${profile?.name || 'player'}!`;
+  document.getElementById('game-time-up').hidden = false;
+  document.getElementById('game-timer-display').textContent = '00:00';
+}
+
+function clearGameTimers() {
+  if (gameTimerInterval) window.clearInterval(gameTimerInterval);
+  if (gameHeartbeatInterval) window.clearInterval(gameHeartbeatInterval);
+  gameTimerInterval = null;
+  gameHeartbeatInterval = null;
+}
+
+async function stopActiveGameSession(reason = 'closed') {
+  const session = activeGameSession;
+  if (!session) return;
+  activeGameSession = null;
+  clearGameTimers();
+  const iframe = document.getElementById('game-iframe');
+  if (iframe) iframe.src = 'about:blank';
+  try {
+    await screenTimeRequest(`api/screen-time/sessions/${encodeURIComponent(session.id)}/stop`, {
+      method: 'POST', body: JSON.stringify({ reason })
     });
   } catch (error) {
-    console.error('[ERROR] Failed to load game profiles:', error);
-    profileList.innerHTML = `
-      <div class="profile-list-empty">
-        <i class="material-icons" aria-hidden="true">error_outline</i>
-        <div>
-          <strong>People could not be loaded</strong>
-          <span>Check the Home Assistant connection and try again.</span>
-        </div>
-        <button type="button" class="btn btn-secondary" id="retry-game-profiles">Retry</button>
-      </div>
-    `;
-    document.getElementById('retry-game-profiles')?.addEventListener('click', () => loadGameProfiles(profileList));
+    console.warn('[WARN] Could not stop game session:', error);
   }
+  activeGame = null;
+  await loadGamesPageData({ resumeActive: false });
+}
+
+function setupGamePinPad() {
+  const keypad = document.getElementById('game-pin-keypad');
+  if (!keypad || keypad.dataset.bound === 'true') return;
+  keypad.dataset.bound = 'true';
+  keypad.addEventListener('click', event => {
+    const key = event.target.closest('[data-pin-key]')?.dataset.pinKey;
+    const action = event.target.closest('[data-pin-action]')?.dataset.pinAction;
+    if (key && gamePinValue.length < 8) gamePinValue += key;
+    if (action === 'clear') gamePinValue = '';
+    if (action === 'backspace') gamePinValue = gamePinValue.slice(0, -1);
+    updateGamePinDisplay();
+  });
+  document.getElementById('game-pin-submit')?.addEventListener('click', submitGamePin);
+  document.getElementById('game-grant-options')?.addEventListener('click', event => {
+    const button = event.target.closest('[data-grant-minutes]');
+    if (!button) return;
+    selectedGrantMinutes = Number(button.dataset.grantMinutes);
+    document.querySelectorAll('[data-grant-minutes]').forEach(option => option.classList.toggle('selected', option === button));
+  });
+}
+
+function openGamePinModal(action, details = {}) {
+  const modal = document.getElementById('game-pin-modal');
+  if (!modal) return;
+  if (!screenTimeSnapshot?.settings.pinSet) {
+    document.getElementById('games-page-status').textContent = 'An adult needs to set a parent PIN in Settings first.';
+    document.querySelector('.tab-item[data-tab-target="settings-content"]')?.click();
+    return;
+  }
+  gamePinAction = { action, ...details };
+  gamePinValue = '';
+  document.getElementById('game-pin-title').textContent = action === 'grant' ? 'Add playtime' : action === 'remove' ? 'Remove game' : 'Parent override';
+  document.getElementById('game-pin-message').textContent = action === 'grant' ? 'Choose minutes, then enter the parent PIN.' : 'Enter the parent PIN to continue.';
+  document.getElementById('game-grant-options').hidden = action !== 'grant';
+  document.getElementById('game-pin-error').textContent = details.error || '';
+  updateGamePinDisplay();
+  modal.classList.add('show');
+  stopFaceRecognitionCamera({ clearBanner: true });
+}
+
+function updateGamePinDisplay() {
+  const display = document.getElementById('game-pin-display');
+  const submit = document.getElementById('game-pin-submit');
+  if (!display || !submit) return;
+  display.textContent = gamePinValue ? '● '.repeat(gamePinValue.length).trim() : '○ ○ ○ ○';
+  display.setAttribute('aria-label', gamePinValue ? `${gamePinValue.length} PIN digits entered` : 'PIN is empty');
+  submit.disabled = gamePinValue.length < 4;
+}
+
+async function submitGamePin() {
+  const submit = document.getElementById('game-pin-submit');
+  const errorBox = document.getElementById('game-pin-error');
+  submit.disabled = true;
+  errorBox.textContent = '';
+  try {
+    if (gamePinAction.action === 'override') {
+      await screenTimeRequest('api/screen-time/settings', { method: 'PUT', body: JSON.stringify({ pin: gamePinValue }) });
+      pendingGameOverridePin = gamePinValue;
+      closeModal(document.getElementById('game-pin-modal'));
+      renderGamesPage();
+    } else if (gamePinAction.action === 'remove') {
+      await screenTimeRequest(`api/games/${encodeURIComponent(gamePinAction.gameId)}`, {
+        method: 'DELETE', body: JSON.stringify({ pin: gamePinValue })
+      });
+      closeModal(document.getElementById('game-pin-modal'));
+      await loadGamesPageData({ resumeActive: false });
+    } else if (gamePinAction.action === 'grant') {
+      await screenTimeRequest('api/screen-time/grants', {
+        method: 'POST',
+        body: JSON.stringify({ pin: gamePinValue, profileId: selectedGameProfileId, minutes: selectedGrantMinutes, reason: 'Parent added game time' })
+      });
+      const gameId = activeGame?.id;
+      closeModal(document.getElementById('game-pin-modal'));
+      await loadGamesPageData({ resumeActive: false });
+      const resumed = screenTimeSnapshot.activeSession;
+      const profile = screenTimeSnapshot.profiles.find(candidate => candidate.id === selectedGameProfileId);
+      if (resumed && gameId && profile) {
+        openRunningGame(resumed, activeGame, profile);
+      } else {
+        activeGameSession = null;
+        if (gameId) await startGameSession(gameId);
+      }
+    }
+  } catch (error) {
+    errorBox.textContent = error.status === 429 && error.data?.retryAfterSeconds
+      ? `${error.message} ${error.data.retryAfterSeconds}s remaining.` : error.message;
+    gamePinValue = '';
+    updateGamePinDisplay();
+  } finally {
+    if (gamePinValue.length >= 4) submit.disabled = false;
+  }
+}
+
+async function initializeScreenTimeSettings() {
+  const form = document.getElementById('screen-time-settings-form');
+  if (!form || form.dataset.bound === 'true') return;
+  form.dataset.bound = 'true';
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    if (screenTimeSettingsSnapshot?.settings.pinSet) openSettingsPinFlow('save');
+    else saveScreenTimeSettings();
+  });
+  document.getElementById('screen-time-set-pin')?.addEventListener('click', () => openSettingsPinFlow('setPin'));
+  setupSettingsPinPad();
+  await loadScreenTimeSettings();
+}
+
+async function loadScreenTimeSettings() {
+  const status = document.getElementById('screen-time-settings-status');
+  try {
+    screenTimeSettingsSnapshot = await screenTimeRequest('api/screen-time');
+    const settings = screenTimeSettingsSnapshot.settings;
+    document.getElementById('screen-time-enabled').checked = settings.enabled;
+    document.getElementById('screen-time-require-chores').checked = settings.requireChoresFirst;
+    document.getElementById('screen-time-include-routines').checked = settings.includeRoutines;
+    document.getElementById('screen-time-default-minutes').value = settings.defaultDailyMinutes;
+    document.getElementById('screen-time-pin-state').textContent = settings.pinSet ? 'PIN protected' : 'PIN not set';
+    document.getElementById('screen-time-set-pin').innerHTML = `<i class="material-icons" aria-hidden="true">pin</i> ${settings.pinSet ? 'Change PIN' : 'Set PIN'}`;
+    const profiles = document.getElementById('screen-time-profile-settings');
+    profiles.innerHTML = screenTimeSettingsSnapshot.profiles.length
+      ? screenTimeSettingsSnapshot.profiles.map(profile => `
+        <label class="screen-time-profile-setting" style="--profile-color:${escapeHtml(getValidCalendarColor(profile.color))}">
+          <span class="profile-avatar">${escapeHtml(getProfileInitials(profile.name))}</span>
+          <span class="screen-time-profile-name">${escapeHtml(profile.name || 'Unnamed')}</span>
+          <input type="number" min="0" max="1440" step="1" value="${escapeHtml(String(profile.dailyMinutes))}" data-screen-time-profile="${escapeHtml(profile.id)}" aria-label="Daily minutes for ${escapeHtml(profile.name || 'profile')}">
+          <span>min/day</span>
+        </label>`).join('')
+      : '<p class="setting-description">Add household profiles before setting individual limits.</p>';
+    status.textContent = settings.pinSet ? '' : 'Set a PIN before using parent overrides, adding time, or removing games.';
+    status.classList.remove('is-error', 'is-success');
+  } catch (error) {
+    status.textContent = error.message;
+    status.classList.add('is-error');
+  }
+}
+
+function collectScreenTimeSettings(pin) {
+  const profiles = {};
+  document.querySelectorAll('[data-screen-time-profile]').forEach(input => {
+    profiles[input.dataset.screenTimeProfile] = { dailyMinutes: Number(input.value) };
+  });
+  return {
+    ...(pin ? { pin } : {}),
+    enabled: document.getElementById('screen-time-enabled').checked,
+    requireChoresFirst: document.getElementById('screen-time-require-chores').checked,
+    includeRoutines: document.getElementById('screen-time-include-routines').checked,
+    defaultDailyMinutes: Number(document.getElementById('screen-time-default-minutes').value),
+    profiles
+  };
+}
+
+async function saveScreenTimeSettings(pin = null) {
+  const status = document.getElementById('screen-time-settings-status');
+  const submit = document.querySelector('#screen-time-settings-form [type="submit"]');
+  submit.disabled = true;
+  status.textContent = 'Saving…';
+  status.classList.remove('is-error', 'is-success');
+  try {
+    await screenTimeRequest('api/screen-time/settings', {
+      method: 'PUT', body: JSON.stringify(collectScreenTimeSettings(pin))
+    });
+    closeModal(document.getElementById('settings-pin-modal'));
+    await loadScreenTimeSettings();
+    status.textContent = 'Screen time settings saved.';
+    status.classList.add('is-success');
+  } catch (error) {
+    if (pin) {
+      document.getElementById('settings-pin-error').textContent = error.status === 429 && error.data?.retryAfterSeconds
+        ? `${error.message} ${error.data.retryAfterSeconds}s remaining.` : error.message;
+      settingsPinValue = '';
+      updateSettingsPinDisplay();
+    } else {
+      status.textContent = error.message;
+      status.classList.add('is-error');
+    }
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function initializeFaceRecognitionSettings() {
+  const form = document.getElementById('face-recognition-settings-form');
+  if (!form || form.dataset.bound === 'true') return;
+  form.dataset.bound = 'true';
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    requestFacePinAction('faceSettings');
+  });
+  document.getElementById('face-match-threshold')?.addEventListener('input', event => {
+    document.getElementById('face-match-threshold-value').textContent = Number(event.target.value).toFixed(2);
+  });
+  document.getElementById('refresh-face-cameras')?.addEventListener('click', async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await populateFaceCameraOptions({ requestPermission: true });
+      setFaceSettingsStatus('Camera list refreshed.');
+    } catch (error) {
+      setFaceSettingsStatus('Cameras could not be listed. You can keep automatic selection.', true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+  document.getElementById('face-profile-settings')?.addEventListener('click', event => {
+    const enroll = event.target.closest('[data-enroll-face]');
+    if (enroll) return requestFacePinAction('faceEnroll', { profileId: enroll.dataset.enrollFace });
+    const remove = event.target.closest('[data-delete-face]');
+    if (remove) requestFacePinAction('faceDelete', { profileId: remove.dataset.deleteFace });
+  });
+  document.getElementById('delete-all-face-data')?.addEventListener('click', () => requestFacePinAction('faceDeleteAll'));
+  document.getElementById('cancel-face-enrollment')?.addEventListener('click', () => closeModal(document.getElementById('face-enrollment-modal')));
+  await loadFaceRecognitionSettings();
+  await populateFaceCameraOptions();
+}
+
+function setFaceSettingsStatus(message, isError = false, isSuccess = false) {
+  const status = document.getElementById('face-settings-status');
+  if (!status) return;
+  status.textContent = message;
+  status.classList.toggle('is-error', isError);
+  status.classList.toggle('is-success', isSuccess);
+}
+
+async function loadFaceRecognitionSettings() {
+  try {
+    faceProfilesSnapshot = await faceProfileRequest('api/face-profiles');
+    faceDescriptorSnapshot = null;
+    const enabled = document.getElementById('face-recognition-enabled');
+    const threshold = document.getElementById('face-match-threshold');
+    if (enabled) enabled.checked = faceProfilesSnapshot.enabled;
+    if (threshold) threshold.value = faceProfilesSnapshot.threshold;
+    const thresholdValue = document.getElementById('face-match-threshold-value');
+    if (thresholdValue) thresholdValue.textContent = Number(faceProfilesSnapshot.threshold).toFixed(2);
+    const state = document.getElementById('face-recognition-state');
+    if (state) state.textContent = faceProfilesSnapshot.enabled ? 'Enabled' : 'Off by default';
+    renderFaceProfileSettings();
+    const anyEnrolled = faceProfilesSnapshot.profiles.some(profile => profile.enrolled);
+    const deleteAll = document.getElementById('delete-all-face-data');
+    if (deleteAll) deleteAll.disabled = !anyEnrolled;
+    setFaceSettingsStatus(screenTimeSettingsSnapshot?.settings.pinSet
+      ? '' : 'Set a parent PIN before enabling recognition or changing face data.');
+  } catch (error) {
+    setFaceSettingsStatus(error.message, true);
+  }
+}
+
+function renderFaceProfileSettings() {
+  const container = document.getElementById('face-profile-settings');
+  if (!container) return;
+  const profiles = faceProfilesSnapshot?.profiles || [];
+  container.innerHTML = profiles.length ? profiles.map(profile => `
+    <div class="face-profile-setting" style="--profile-color:${escapeHtml(getValidCalendarColor(profile.color))}">
+      <span class="profile-avatar">${escapeHtml(getProfileInitials(profile.name))}</span>
+      <span class="face-profile-copy">
+        <strong>${escapeHtml(profile.name || 'Unnamed')}</strong>
+        <small>${profile.enrolled ? `${profile.sampleCount} sample${profile.sampleCount === 1 ? '' : 's'} stored` : 'Not enrolled'}</small>
+      </span>
+      <button type="button" class="btn btn-secondary" data-enroll-face="${escapeHtml(profile.profileId)}">${profile.enrolled ? 'Re-enroll' : 'Enroll'}</button>
+      ${profile.enrolled ? `<button type="button" class="btn btn-danger delete-face-profile" data-delete-face="${escapeHtml(profile.profileId)}">Delete face data</button>` : ''}
+    </div>`).join('') : '<p class="setting-description">Add household profiles before enrolling faces.</p>';
+}
+
+async function populateFaceCameraOptions({ requestPermission = false } = {}) {
+  const select = document.getElementById('face-camera-device');
+  if (!select || !navigator.mediaDevices?.enumerateDevices) return;
+  let permissionStream = null;
+  try {
+    if (requestPermission) permissionStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    const devices = (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'videoinput');
+    const selectedId = faceProfilesSnapshot?.deviceId || select.value || '';
+    select.replaceChildren();
+    const automatic = document.createElement('option');
+    automatic.value = '';
+    automatic.textContent = 'Prefer Dell S2340T, then first camera';
+    select.appendChild(automatic);
+    devices.forEach((device, index) => {
+      const option = document.createElement('option');
+      option.value = device.deviceId;
+      option.textContent = device.label || `Camera ${index + 1}`;
+      select.appendChild(option);
+    });
+    if (selectedId && !devices.some(device => device.deviceId === selectedId)) {
+      const unavailable = document.createElement('option');
+      unavailable.value = selectedId;
+      unavailable.textContent = 'Previously selected camera (unavailable)';
+      select.appendChild(unavailable);
+    }
+    select.value = selectedId;
+  } finally {
+    stopMediaStream(permissionStream);
+  }
+}
+
+function collectFaceSettings(pin) {
+  return {
+    pin,
+    enabled: document.getElementById('face-recognition-enabled').checked,
+    deviceId: document.getElementById('face-camera-device').value || null,
+    threshold: Number(document.getElementById('face-match-threshold').value)
+  };
+}
+
+function requestFacePinAction(type, details = {}) {
+  if (!screenTimeSettingsSnapshot?.settings.pinSet) {
+    setFaceSettingsStatus('Set a parent PIN first, then try this action again.', true);
+    openSettingsPinFlow('setPin');
+    return;
+  }
+  openSettingsPinFlow(type, details);
+}
+
+async function submitFaceProtectedAction(pin) {
+  const flow = settingsPinFlow;
+  const submit = document.getElementById('settings-pin-submit');
+  const errorBox = document.getElementById('settings-pin-error');
+  submit.disabled = true;
+  try {
+    if (flow.type === 'faceSettings') {
+      await faceProfileRequest('api/face-profiles/settings', {
+        method: 'PUT', body: JSON.stringify(collectFaceSettings(pin))
+      });
+      closeModal(document.getElementById('settings-pin-modal'));
+      settingsPinValue = '';
+      settingsPinFlow = null;
+      await loadFaceRecognitionSettings();
+      setFaceSettingsStatus('Face recognition settings saved.', false, true);
+    } else if (flow.type === 'faceEnroll') {
+      await faceProfileRequest('api/face-profiles/settings', {
+        method: 'PUT', body: JSON.stringify({ pin })
+      });
+      closeModal(document.getElementById('settings-pin-modal'));
+      settingsPinValue = '';
+      settingsPinFlow = null;
+      await startFaceEnrollment(flow.profileId, pin);
+    } else if (flow.type === 'faceDelete') {
+      await faceProfileRequest(`api/face-profiles/${encodeURIComponent(flow.profileId)}`, {
+        method: 'DELETE', body: JSON.stringify({ pin })
+      });
+      closeModal(document.getElementById('settings-pin-modal'));
+      settingsPinValue = '';
+      settingsPinFlow = null;
+      await loadFaceRecognitionSettings();
+      setFaceSettingsStatus('Face data deleted.', false, true);
+    } else if (flow.type === 'faceDeleteAll') {
+      await faceProfileRequest('api/face-profiles', {
+        method: 'DELETE', body: JSON.stringify({ pin })
+      });
+      closeModal(document.getElementById('settings-pin-modal'));
+      settingsPinValue = '';
+      settingsPinFlow = null;
+      await loadFaceRecognitionSettings();
+      setFaceSettingsStatus('All face data deleted.', false, true);
+    }
+  } catch (error) {
+    errorBox.textContent = error.status === 429 && error.data?.retryAfterSeconds
+      ? `${error.message} ${error.data.retryAfterSeconds}s remaining.` : error.message;
+    settingsPinValue = '';
+    updateSettingsPinDisplay();
+  } finally {
+    if (settingsPinValue.length >= 4) submit.disabled = false;
+  }
+}
+
+async function startFaceEnrollment(profileId, pin) {
+  const profile = faceProfilesSnapshot?.profiles.find(candidate => candidate.profileId === profileId);
+  if (!profile) return;
+  stopFaceEnrollmentCamera();
+  const modal = document.getElementById('face-enrollment-modal');
+  const video = document.getElementById('face-enrollment-video');
+  const guidance = document.getElementById('face-enrollment-guidance');
+  const errorBox = document.getElementById('face-enrollment-error');
+  document.getElementById('face-enrollment-title').textContent = `Enroll ${profile.name || 'profile'}`;
+  document.getElementById('face-enrollment-progress').textContent = '0/5';
+  guidance.textContent = 'Preparing the camera…';
+  errorBox.textContent = '';
+  modal.classList.add('show');
+  const runId = ++faceEnrollmentRunId;
+  faceEnrollmentState = { profileId, pin, descriptors: [] };
+  try {
+    await loadFaceModels();
+    if (runId !== faceEnrollmentRunId || !modal.classList.contains('show') || document.hidden) return;
+    const stream = await openPreferredFaceCamera(video, document.getElementById('face-camera-device')?.value || faceProfilesSnapshot.deviceId);
+    if (runId !== faceEnrollmentRunId || !modal.classList.contains('show') || document.hidden) {
+      stopMediaStream(stream);
+      video.srcObject = null;
+      return;
+    }
+    faceEnrollmentStream = stream;
+    guidance.textContent = faceEnrollmentGuidance(0);
+    scheduleFaceEnrollmentFrame(runId, 600);
+  } catch (error) {
+    if (runId !== faceEnrollmentRunId) return;
+    stopFaceEnrollmentCamera({ preserveState: true });
+    guidance.textContent = 'Camera unavailable.';
+    errorBox.textContent = 'Use Find cameras above, check camera permission, then try again.';
+  }
+}
+
+function faceEnrollmentGuidance(index) {
+  return ['Look straight at the camera', 'Turn slightly left', 'Turn slightly right', 'Lift your chin slightly', 'Smile naturally'][index] || 'Saving face data…';
+}
+
+function scheduleFaceEnrollmentFrame(runId, delay = 700) {
+  if (faceEnrollmentTimer) window.clearTimeout(faceEnrollmentTimer);
+  faceEnrollmentTimer = window.setTimeout(() => captureFaceEnrollmentFrame(runId), delay);
+}
+
+async function captureFaceEnrollmentFrame(runId) {
+  const state = faceEnrollmentState;
+  if (runId !== faceEnrollmentRunId || !state || !faceEnrollmentStream || document.hidden) return;
+  const video = document.getElementById('face-enrollment-video');
+  const guidance = document.getElementById('face-enrollment-guidance');
+  const errorBox = document.getElementById('face-enrollment-error');
+  try {
+    if (video.readyState < 2) return scheduleFaceEnrollmentFrame(runId);
+    const detections = await window.faceapi.detectAllFaces(
+      video,
+      new window.faceapi.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.5 })
+    ).withFaceLandmarks(true).withFaceDescriptors();
+    if (runId !== faceEnrollmentRunId || !faceEnrollmentStream) return;
+    if (detections.length === 0) errorBox.textContent = 'No face found — move into the center of the preview.';
+    else if (detections.length > 1) errorBox.textContent = 'More than one face found — please enroll one person at a time.';
+    else if (detections[0].detection.score < FACE_ENROL_MIN_SCORE) errorBox.textContent = 'Face confidence is too low — face the camera in better light.';
+    else {
+      errorBox.textContent = '';
+      state.descriptors.push(Array.from(detections[0].descriptor));
+      document.getElementById('face-enrollment-progress').textContent = `${state.descriptors.length}/5`;
+      guidance.textContent = faceEnrollmentGuidance(state.descriptors.length);
+      if (state.descriptors.length >= 5) return saveFaceEnrollment(runId);
+    }
+  } catch (error) {
+    errorBox.textContent = 'That frame could not be read. Hold still and try again.';
+  }
+  scheduleFaceEnrollmentFrame(runId);
+}
+
+async function saveFaceEnrollment(runId) {
+  const state = faceEnrollmentState;
+  if (runId !== faceEnrollmentRunId || !state) return;
+  document.getElementById('face-enrollment-guidance').textContent = 'Saving face data…';
+  try {
+    await faceProfileRequest(`api/face-profiles/${encodeURIComponent(state.profileId)}`, {
+      method: 'POST',
+      body: JSON.stringify({ pin: state.pin, descriptors: state.descriptors })
+    });
+    closeModal(document.getElementById('face-enrollment-modal'));
+    await loadFaceRecognitionSettings();
+    setFaceSettingsStatus('Face enrollment saved. Only numeric face vectors were stored.', false, true);
+  } catch (error) {
+    document.getElementById('face-enrollment-error').textContent = error.message;
+    document.getElementById('face-enrollment-guidance').textContent = 'Enrollment was not saved.';
+    stopFaceEnrollmentCamera({ preserveState: true });
+  }
+}
+
+function stopFaceEnrollmentCamera({ preserveState = false } = {}) {
+  faceEnrollmentRunId += 1;
+  if (faceEnrollmentTimer) window.clearTimeout(faceEnrollmentTimer);
+  faceEnrollmentTimer = null;
+  stopMediaStream(faceEnrollmentStream);
+  faceEnrollmentStream = null;
+  const video = document.getElementById('face-enrollment-video');
+  if (video?.srcObject) {
+    stopMediaStream(video.srcObject);
+    video.srcObject = null;
+  }
+  if (!preserveState) faceEnrollmentState = null;
+}
+
+function setupSettingsPinPad() {
+  const keypad = document.getElementById('settings-pin-keypad');
+  if (!keypad || keypad.dataset.bound === 'true') return;
+  keypad.dataset.bound = 'true';
+  keypad.addEventListener('click', event => {
+    const key = event.target.closest('[data-pin-key]')?.dataset.pinKey;
+    const action = event.target.closest('[data-pin-action]')?.dataset.pinAction;
+    if (key && settingsPinValue.length < 8) settingsPinValue += key;
+    if (action === 'clear') settingsPinValue = '';
+    if (action === 'backspace') settingsPinValue = settingsPinValue.slice(0, -1);
+    updateSettingsPinDisplay();
+  });
+  document.getElementById('settings-pin-submit')?.addEventListener('click', submitSettingsPin);
+}
+
+function openSettingsPinFlow(type, details = {}) {
+  const pinSet = Boolean(screenTimeSettingsSnapshot?.settings.pinSet);
+  const titles = {
+    save: 'Save screen time',
+    faceSettings: 'Save face settings',
+    faceEnroll: 'Enroll face',
+    faceDelete: 'Delete face data',
+    faceDeleteAll: 'Delete all face data'
+  };
+  const prompts = {
+    faceSettings: 'Enter the parent PIN to save face recognition settings.',
+    faceEnroll: 'Enter the parent PIN before the camera opens.',
+    faceDelete: 'Enter the parent PIN to delete this profile’s face data.',
+    faceDeleteAll: 'Enter the parent PIN to delete every stored face vector.'
+  };
+  settingsPinFlow = {
+    type,
+    stage: type === 'save' || pinSet ? 'current' : 'new',
+    currentPin: null,
+    newPin: null,
+    prompt: prompts[type] || null,
+    ...details
+  };
+  settingsPinValue = '';
+  document.getElementById('settings-pin-title').textContent = titles[type] || (pinSet ? 'Change parent PIN' : 'Set parent PIN');
+  document.getElementById('settings-pin-error').textContent = '';
+  updateSettingsPinPrompt();
+  updateSettingsPinDisplay();
+  document.getElementById('settings-pin-modal').classList.add('show');
+}
+
+function updateSettingsPinPrompt() {
+  const prompt = document.getElementById('settings-pin-message');
+  if (!settingsPinFlow || !prompt) return;
+  prompt.textContent = settingsPinFlow.stage === 'current' ? (settingsPinFlow.prompt || 'Enter the current parent PIN.')
+    : settingsPinFlow.stage === 'new' ? 'Choose a new 4–8 digit PIN.'
+      : 'Enter the new PIN again.';
+}
+
+function updateSettingsPinDisplay() {
+  const display = document.getElementById('settings-pin-display');
+  const submit = document.getElementById('settings-pin-submit');
+  if (!display || !submit) return;
+  display.textContent = settingsPinValue ? '● '.repeat(settingsPinValue.length).trim() : '○ ○ ○ ○';
+  display.setAttribute('aria-label', settingsPinValue ? `${settingsPinValue.length} PIN digits entered` : 'PIN is empty');
+  submit.disabled = settingsPinValue.length < 4;
+}
+
+async function submitSettingsPin() {
+  if (!settingsPinFlow || settingsPinValue.length < 4) return;
+  const errorBox = document.getElementById('settings-pin-error');
+  errorBox.textContent = '';
+  if (settingsPinFlow.type === 'save') return saveScreenTimeSettings(settingsPinValue);
+  if (settingsPinFlow.type.startsWith('face')) return submitFaceProtectedAction(settingsPinValue);
+  if (settingsPinFlow.stage === 'current') {
+    settingsPinFlow.currentPin = settingsPinValue;
+    settingsPinFlow.stage = 'new';
+  } else if (settingsPinFlow.stage === 'new') {
+    settingsPinFlow.newPin = settingsPinValue;
+    settingsPinFlow.stage = 'confirm';
+  } else if (settingsPinValue !== settingsPinFlow.newPin) {
+    errorBox.textContent = 'Those PINs do not match. Enter the new PIN again.';
+  } else {
+    const submit = document.getElementById('settings-pin-submit');
+    submit.disabled = true;
+    try {
+      await screenTimeRequest('api/screen-time/pin', {
+        method: 'PUT',
+        body: JSON.stringify({ currentPin: settingsPinFlow.currentPin, newPin: settingsPinFlow.newPin })
+      });
+      closeModal(document.getElementById('settings-pin-modal'));
+      await loadScreenTimeSettings();
+      await loadFaceRecognitionSettings();
+      const status = document.getElementById('screen-time-settings-status');
+      status.textContent = 'Parent PIN saved.';
+      status.classList.add('is-success');
+      return;
+    } catch (error) {
+      errorBox.textContent = error.status === 429 && error.data?.retryAfterSeconds
+        ? `${error.message} ${error.data.retryAfterSeconds}s remaining.` : error.message;
+      settingsPinFlow.stage = screenTimeSettingsSnapshot.settings.pinSet ? 'current' : 'new';
+      settingsPinFlow.currentPin = null;
+      settingsPinFlow.newPin = null;
+    }
+  }
+  settingsPinValue = '';
+  updateSettingsPinPrompt();
+  updateSettingsPinDisplay();
 }
 
 function initializeSettingsPage() {
   console.log('[INFO] Initializing settings page...');
 
   // Setup display settings event listeners only when settings page is loaded
-  setTimeout(() => {
+  setTimeout(async () => {
     console.log('[DEBUG] Settings page timeout reached, setting up elements...');
 
     const screenBurnProtection = document.getElementById('screen-burn-protection');
@@ -963,24 +3052,22 @@ function initializeSettingsPage() {
         try {
           console.log('[INFO] Starting camera test');
           const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+          if (document.hidden || !document.getElementById('settings-content')?.classList.contains('active-content')) {
+            stopMediaStream(stream);
+            return;
+          }
           cameraVideo.srcObject = stream;
           startCameraBtn.disabled = true;
           stopCameraBtn.disabled = false;
         } catch (error) {
           console.error('[ERROR] Camera access failed:', error);
-          alert('Camera access failed: ' + error.message);
+          showAppNotice('Camera unavailable', `Camera access failed: ${error.message}`);
         }
       });
 
       stopCameraBtn.addEventListener('click', () => {
         console.log('[INFO] Stopping camera test');
-        const stream = cameraVideo.srcObject;
-        if (stream) {
-          stream.getTracks().forEach(track => track.stop());
-          cameraVideo.srcObject = null;
-        }
-        startCameraBtn.disabled = false;
-        stopCameraBtn.disabled = true;
+        stopCameraTest();
       });
       console.log('[DEBUG] Camera button listeners added');
     }
@@ -1020,7 +3107,7 @@ function initializeSettingsPage() {
           stopMicBtn.disabled = false;
         } catch (error) {
           console.error('[ERROR] Microphone access failed:', error);
-          alert('Microphone access failed: ' + error.message);
+          showAppNotice('Microphone unavailable', `Microphone access failed: ${error.message}`);
         }
       });
 
@@ -1083,6 +3170,10 @@ function initializeSettingsPage() {
       loadCalendarManagement();
     }
 
+    await initializeReceiptReaderSettings();
+    await initializeScreenTimeSettings();
+    await initializeFaceRecognitionSettings();
+
     // Re-setup modals for settings page (generic closers)
     setupModals();
     setupColorAndIconSelectors();
@@ -1097,6 +3188,51 @@ function initializeSettingsPage() {
 function initializeDebugPage() {
   console.log('[INFO] Debug page loaded in iframe');
   // Debug page is an iframe, so no special initialization needed
+}
+
+function stopCameraTest() {
+  const video = document.getElementById('camera-test');
+  if (video?.srcObject) {
+    stopMediaStream(video.srcObject);
+    video.srcObject = null;
+  }
+  const start = document.getElementById('start-camera');
+  const stop = document.getElementById('stop-camera');
+  if (start) start.disabled = false;
+  if (stop) stop.disabled = true;
+}
+
+function handleCameraPageChange(target) {
+  if (target !== 'games-content') {
+    stopFaceRecognitionCamera({ clearBanner: true });
+  }
+  if (target !== 'settings-content') {
+    const enrollmentModal = document.getElementById('face-enrollment-modal');
+    if (enrollmentModal?.classList.contains('show')) closeModal(enrollmentModal);
+    else stopFaceEnrollmentCamera();
+    stopCameraTest();
+  }
+  if (target === 'games-content') {
+    window.setTimeout(() => {
+      if (faceDescriptorSnapshot) void syncFaceRecognitionState();
+      else void loadFaceRecognitionForGames();
+    }, 0);
+  }
+}
+
+function handleCameraVisibilityChange() {
+  if (document.hidden) {
+    stopFaceRecognitionCamera({ clearBanner: true });
+    const enrollmentModal = document.getElementById('face-enrollment-modal');
+    if (enrollmentModal?.classList.contains('show')) closeModal(enrollmentModal);
+    else stopFaceEnrollmentCamera();
+    stopCameraTest();
+    return;
+  }
+  if (isGamesPageVisible()) {
+    if (faceDescriptorSnapshot) void syncFaceRecognitionState();
+    else void loadFaceRecognitionForGames();
+  }
 }
 
 // Initialize sidebar and global UI
@@ -1121,6 +3257,7 @@ function initializeSidebar() {
   tabItems.forEach(item => {
     item.addEventListener('click', () => {
       const target = item.dataset.tabTarget;
+      handleCameraPageChange(target);
 
       // Remove active classes
       tabItems.forEach(tab => tab.classList.remove('active-tab'));
@@ -1164,9 +3301,12 @@ function initializeGlobalUI() {
   document.addEventListener('keypress', resetInactivityTimer);
   document.addEventListener('touchstart', resetInactivityTimer);
   document.addEventListener('scroll', resetInactivityTimer);
+  document.removeEventListener('visibilitychange', handleCameraVisibilityChange);
+  document.addEventListener('visibilitychange', handleCameraVisibilityChange);
 
   // Setup modal management
   setupModals();
+  setupAppDialog();
 
   // These listeners live on the stable document, so Turbo frame swaps cannot
   // orphan them or create duplicate handlers when Settings is reopened.
@@ -1184,6 +3324,36 @@ function initializeGlobalUI() {
   // Start the clock
   updateClock();
   setInterval(updateClock, 1000);
+}
+
+function setupAppDialog() {
+  document.getElementById('app-dialog-confirm')?.addEventListener('click', () => settleAppDialog(true));
+  document.getElementById('app-dialog-cancel')?.addEventListener('click', () => settleAppDialog(false));
+}
+
+function openAppDialog({ title, message, confirmLabel = 'OK', showCancel = false }) {
+  const modal = document.getElementById('app-dialog-modal');
+  document.getElementById('app-dialog-title').textContent = title;
+  document.getElementById('app-dialog-message').textContent = message;
+  document.getElementById('app-dialog-confirm').textContent = confirmLabel;
+  document.getElementById('app-dialog-cancel').hidden = !showCancel;
+  modal.classList.add('show');
+  return new Promise(resolve => { appDialogResolver = resolve; });
+}
+
+function showAppNotice(title, message) {
+  return openAppDialog({ title, message });
+}
+
+function requestAppConfirmation(title, message, confirmLabel = 'Continue') {
+  return openAppDialog({ title, message, confirmLabel, showCancel: true });
+}
+
+function settleAppDialog(value) {
+  const resolve = appDialogResolver;
+  appDialogResolver = null;
+  document.getElementById('app-dialog-modal')?.classList.remove('show');
+  if (resolve) resolve(value);
 }
 
 function handleDelegatedUiClick(event) {
@@ -1478,15 +3648,26 @@ function handleModalBackdropClick(event) {
 }
 
 function closeModal(modal) {
+  if (!modal) return;
+  if (modal.id === 'app-dialog-modal') {
+    settleAppDialog(false);
+    return;
+  }
   modal.classList.remove('show');
 
-  // If this is the game modal, clear the iframe src when closing
+  if (modal.id === 'receipt-crop-modal') clearReceiptCrop();
+  if (modal.id === 'face-enrollment-modal') stopFaceEnrollmentCamera();
+
+  // A game spends time only while its modal is open. Blank the iframe first so
+  // audio stops immediately, then end the server session idempotently.
   if (modal.id === 'game-focus-modal') {
     const gameIframe = document.getElementById('game-iframe');
     if (gameIframe) {
-      gameIframe.src = '';
+      gameIframe.src = 'about:blank';
     }
+    if (activeGameSession) void stopActiveGameSession('closed');
   }
+  window.setTimeout(() => void syncFaceRecognitionState(), 0);
 }
 
 function setupCalendar() {
@@ -2894,7 +5075,7 @@ function openMealForm({ date, mealType, meal, recipe } = {}) {
   if (deleteButton) {
     deleteButton.hidden = !meal;
     deleteButton.onclick = async () => {
-      if (!meal || !window.confirm(`Remove ${meal.description || 'this meal'}?`)) return;
+      if (!meal || !(await requestAppConfirmation('Remove meal?', `Remove ${meal.description || 'this meal'}?`, 'Remove'))) return;
       deleteButton.disabled = true;
       try {
         const response = await fetch(`api/meals/${encodeURIComponent(meal.id)}`, { method: 'DELETE' });
@@ -3112,7 +5293,7 @@ async function submitRecipeForm(event) {
 }
 
 async function deleteRecipe(recipe) {
-  if (!window.confirm(`Delete ${recipe.name}?`)) return;
+  if (!(await requestAppConfirmation('Delete recipe?', `Delete ${recipe.name}?`, 'Delete'))) return;
   try {
     const response = await fetch(`api/recipes/${encodeURIComponent(recipe.id)}`, { method: 'DELETE' });
     if (!response.ok) throw new Error('Unable to delete this recipe');
@@ -3557,7 +5738,7 @@ async function handleUpdateUser(e) {
     fetchUsers(); // Refresh list
     loadCalendarManagement();
   } catch (err) {
-    alert('Error: ' + err.message);
+    showAppNotice('Profile not saved', err.message);
   } finally {
     btn.textContent = originalText;
     btn.disabled = false;
@@ -3602,10 +5783,10 @@ async function handleCreateUser(e) {
     nameInput.value = '';
     fetchUsers(); // Refresh list
     loadCalendarManagement();
-    alert(`Profile "${name}" created successfully!`);
+    showAppNotice('Profile created', `${name} is ready to use.`);
 
   } catch (err) {
-    alert('Error: ' + err.message);
+    showAppNotice('Profile not created', err.message);
   } finally {
     btn.textContent = originalText;
     btn.disabled = false;
@@ -4101,7 +6282,7 @@ async function connectAppleCalendar() {
 }
 
 async function disconnectCalDAVAccount(accountId) {
-  if (!confirm('Disconnect this calendar account? Events from this account will no longer appear.')) {
+  if (!(await requestAppConfirmation('Disconnect calendar?', 'Events from this account will no longer appear.', 'Disconnect'))) {
     return;
   }
 
@@ -4119,7 +6300,7 @@ async function disconnectCalDAVAccount(accountId) {
     loadCalendarManagement();
     refreshCalendarAvailability();
   } catch (err) {
-    alert('Error disconnecting: ' + err.message);
+    showAppNotice('Calendar not disconnected', err.message);
   }
 }
 
