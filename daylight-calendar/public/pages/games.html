@@ -21,28 +21,19 @@
           <span id="screen-time-mode" class="screen-time-mode"></span>
         </div>
       </div>
-      <video id="face-recognition-video" class="face-recognition-video" width="320" height="240" autoplay muted playsinline hidden></video>
-      <div class="profile-list" id="profile-list" aria-live="polite">
-        <div class="profile-list-state"><i class="material-icons spin" aria-hidden="true">refresh</i> Loading people…</div>
+      <div class="game-title">Geometry Dash</div>
+      <div class="playtime-indicator">15 min</div>
+    </div>
+    <div class="game-item" data-game-url="https://hextris.io/" data-game-age="6+">
+      <div class="game-icon">
+        <img src="https://github.com/Hextris/hextris/blob/gh-pages/images/twitter-opengraph.png?raw=true" alt="Hextris">
       </div>
-    </section>
-
-    <section id="face-match-banner" class="face-match-banner" hidden aria-live="assertive">
-      <strong id="face-match-message"></strong>
-      <button type="button" id="face-match-reject" class="btn btn-secondary">Not me</button>
-    </section>
-
-    <section id="game-gate-panel" class="game-gate-panel" hidden aria-live="polite">
-      <div class="game-gate-copy">
-        <i class="material-icons" aria-hidden="true">task_alt</i>
-        <div>
-          <h2>Finish these first:</h2>
-          <ul id="game-blocking-list"></ul>
-        </div>
-      </div>
-      <div class="game-gate-actions">
-        <button type="button" class="btn btn-primary" id="open-chores-from-games">Go to Chores</button>
-        <button type="button" class="btn btn-secondary" id="parent-game-override">Parent override</button>
+      <div class="game-title">Hextris</div>
+      <div class="playtime-indicator">10 min</div>
+    </div>
+    <div class="game-item" data-game-url="https://ellisonleao.github.io/clumsy-bird/" data-game-age="5+">
+      <div class="game-icon">
+        <img src="https://nathanprinsley-games.prinsh.com/NathanPrinsleyGames/clumsybird/thumb_1.jpg" alt="Clumsy Bird">
       </div>
     </section>
 
@@ -109,32 +100,5 @@
       </div>
     </div>
   </div>
-
-  <div id="game-pin-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="game-pin-title">
-    <div class="modal-content pin-modal-content">
-      <div class="modal-header">
-        <h3 id="game-pin-title">Parent PIN</h3>
-        <button class="modal-close" type="button" aria-label="Close">&times;</button>
-      </div>
-      <div class="modal-body pin-modal-body">
-        <p id="game-pin-message">Enter the parent PIN.</p>
-        <div id="game-grant-options" class="game-grant-options" hidden>
-          <span>Add:</span>
-          <button type="button" data-grant-minutes="5">5 min</button>
-          <button type="button" data-grant-minutes="10">10 min</button>
-          <button type="button" data-grant-minutes="15" class="selected">15 min</button>
-          <button type="button" data-grant-minutes="30">30 min</button>
-        </div>
-        <div id="game-pin-display" class="pin-display" aria-label="PIN is empty">○ ○ ○ ○</div>
-        <div id="game-pin-error" class="inline-form-error" role="alert"></div>
-        <div id="game-pin-keypad" class="pin-keypad" aria-label="PIN keypad">
-          <button type="button" data-pin-key="1">1</button><button type="button" data-pin-key="2">2</button><button type="button" data-pin-key="3">3</button>
-          <button type="button" data-pin-key="4">4</button><button type="button" data-pin-key="5">5</button><button type="button" data-pin-key="6">6</button>
-          <button type="button" data-pin-key="7">7</button><button type="button" data-pin-key="8">8</button><button type="button" data-pin-key="9">9</button>
-          <button type="button" data-pin-action="clear" aria-label="Clear PIN">Clear</button><button type="button" data-pin-key="0">0</button><button type="button" data-pin-action="backspace" aria-label="Delete last digit"><i class="material-icons" aria-hidden="true">backspace</i></button>
-        </div>
-        <button type="button" id="game-pin-submit" class="btn btn-primary pin-submit" disabled>Continue</button>
-      </div>
-    </div>
-  </div>
+</div>
 </turbo-frame>

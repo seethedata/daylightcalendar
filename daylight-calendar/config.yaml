@@ -1,7 +1,7 @@
-name: "Daylight Calendar"
-version: "1.1.9.31"
+name: "Daylight Calendar (seethedata)"
+version: "1.1.9.24"
 slug: "daylight_calendar"
-description: "A beautiful fullscreen calendar display for your Home Assistant touchscreen"
+description: "A beautiful fullscreen calendar display for your Home Assistant touchscreen."
 url: "https://github.com/Ark-Web-Services/daylightcalendar"
 arch:
   - armhf
@@ -33,7 +33,7 @@ homeassistant_api: true
 ingress: true
 ingress_port: 8099
 panel_icon: mdi:calendar
-panel_title: "Daylight Calendar"
+panel_title: "Daylight Calendar (seethedata)"
 devices:
   - /dev/fb0
   - /dev/dri/card0
